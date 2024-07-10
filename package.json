@@ -1,0 +1,13 @@
+{
+  "name": "epson-projector",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Reverse engineering notes for Epson wireless video projectors",
+  "main": "decode.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
