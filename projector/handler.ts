@@ -110,6 +110,7 @@ export function handleDiscoveryServerConnection(
   console.log("\n\n---Start Discovery Server Connection---");
   const header = decodeHeader(msg);
   console.log(header);
+  console.log(msg.toString("hex"));
   if (header.status === 1) {
     const header = createHeader(
       Buffer.from("EEMP0100"),

@@ -5,7 +5,8 @@
   "main": "decode.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon --exec ts-node app.ts"
+    "dev:projector": "nodemon --exec ts-node projector/app.ts",
+    "dev:client": "nodemon --exec ts-node client/app.ts"
   },
   "keywords": [],
   "author": "",

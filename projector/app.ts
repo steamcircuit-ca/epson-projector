@@ -1,6 +1,6 @@
 import dgram from "dgram";
 import { createServer } from "net";
-import config from "./config";
+import config from "../config";
 import {
   handleDiscoveryServerConnection,
   handleImageServerConnection,
