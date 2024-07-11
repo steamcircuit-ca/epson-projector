@@ -4,7 +4,7 @@ type Config = {
   controlWord: string;
 };
 
-function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
+export function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
   const { ipAddress, status, controlWord } = config;
 
   if (ipAddress.length !== 4) {
@@ -23,7 +23,7 @@ function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
   statusBuffer.writeUInt8(status, 0);
 
   // Calculate the data length (dataBuffer length)
-  const dataLength = dataBuffer.length;
+  const dataLength = dataBuffer.length ; // The last 6 bytes of padding
   const dataLengthBuffer = Buffer.alloc(1);
   dataLengthBuffer.writeUInt8(dataLength, 0);
 
@@ -37,8 +37,8 @@ function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
     statusBuffer,
     paddingBuffer,
     dataLengthBuffer,
-    dataBuffer,
     paddingBuffer,
+    dataBuffer,
   ]);
 
   // Return the final buffer
@@ -52,7 +52,7 @@ type Header = {
   dataLength: number;
 };
 
-function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
+export function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
   // Extract the control word (first 8 bytes)
   const controlWord = buffer.subarray(0, 8).toString("ascii");
 
@@ -69,8 +69,10 @@ function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
   // Extract the data length (next 1 byte)
   const dataLength = buffer.readUInt8(16);
 
+  const paddingBuffer2 = buffer.subarray(17 + dataLength, 20);
+
   // Extract the data (next dataLength bytes)
-  const data = buffer.subarray(17, 17 + dataLength);
+  const data = buffer.subarray(20, 20 + dataLength);
 
   // Construct the header object
   const header: Header = {
@@ -82,19 +84,3 @@ function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
 
   return { header, data };
 }
-
-console.log(
-  decodeDataBuffer(
-    createDataBuffer(
-      Buffer.from(
-        "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-        "hex"
-      ),
-      {
-        ipAddress: Buffer.from([172, 16, 0, 226]),
-        status: 1,
-        controlWord: "EEMP0100",
-      }
-    )
-  )
-);
