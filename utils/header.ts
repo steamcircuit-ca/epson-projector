@@ -45,16 +45,56 @@ function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
   return finalBuffer;
 }
 
+type Header = {
+  controlWord: string;
+  ipAddress: Buffer;
+  status: number;
+  dataLength: number;
+};
+
+function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
+  // Extract the control word (first 8 bytes)
+  const controlWord = buffer.subarray(0, 8).toString("ascii");
+
+  // Extract the IP address (next 4 bytes)
+  const ipAddress = buffer.subarray(8, 12);
+  //   const ipAddress = `${ipAddressBuffer[0]}.${ipAddressBuffer[1]}.${ipAddressBuffer[2]}.${ipAddressBuffer[3]}`;
+
+  // Extract the status (next 1 byte)
+  const status = buffer.readUInt8(12);
+
+  // Skip initial padding (next 3 bytes)
+  const paddingBuffer1 = buffer.subarray(13, 16);
+
+  // Extract the data length (next 1 byte)
+  const dataLength = buffer.readUInt8(16);
+
+  // Extract the data (next dataLength bytes)
+  const data = buffer.subarray(17, 17 + dataLength);
+
+  // Construct the header object
+  const header: Header = {
+    controlWord,
+    ipAddress,
+    status,
+    dataLength,
+  };
+
+  return { header, data };
+}
+
 console.log(
-  createDataBuffer(
-    Buffer.from(
-      "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-      "hex"
-    ),
-    {
-      ipAddress: Buffer.from([172, 16, 0, 226]),
-      status: 1,
-      controlWord: "EEMP0100",
-    }
-  ).toString("hex")
+  decodeDataBuffer(
+    createDataBuffer(
+      Buffer.from(
+        "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "hex"
+      ),
+      {
+        ipAddress: Buffer.from([172, 16, 0, 226]),
+        status: 1,
+        controlWord: "EEMP0100",
+      }
+    )
+  )
 );
