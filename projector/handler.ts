@@ -107,19 +107,43 @@ export function handleDiscoveryServerConnection(
     callback?: (error: Error | null, bytes: number) => void
   ) => void
 ) {
+  const receivedHeader = decodeHeader(msg);
   console.log("\n\n---Start Discovery Server Connection---");
-  const header = decodeHeader(msg);
-  console.log(header);
   console.log(msg.toString("hex"));
-  if (header.status === 1) {
-    const header = createHeader(
-      Buffer.from("EEMP0100"),
-      msg.subarray(8, 12),
-      3,
-      74
-    );
-    const fullMessage = Buffer.concat([header, discoveryMessageBuffer]);
-    send(fullMessage, rinfo.port, rinfo.address);
-  }
+  console.log(receivedHeader);
+  const header = createHeader(
+    Buffer.from("EEMP0100"),
+    msg.subarray(8, 12),
+    2,
+    74
+  );
+
+  const fullMessage = Buffer.concat([header, discoveryMessageBuffer]);
+
+  send(fullMessage, 3620, rinfo.address, (err) => {
+    if (err) {
+      console.error("Error sending message:", err);
+    } else {
+      console.log(`Message sent to ${rinfo.address}:3620`);
+    }
+  });
+
+  const header2 = createHeader(
+    Buffer.from("EEMP0100"),
+    msg.subarray(8, 12),
+    21,
+    216
+  );
+
+  const fullMessage2 = Buffer.concat([header2, dataMessageBuffer]);
+
+  send(fullMessage2, 3620, rinfo.address, (err) => {
+    if (err) {
+      console.error("Error sending message:", err);
+    } else {
+      console.log(`Message sent to ${rinfo.address}:3620`);
+    }
+  });
+
   console.log("---End Discovery Server Connection---");
 }

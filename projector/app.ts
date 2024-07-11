@@ -15,9 +15,13 @@ const imageServer = createServer(handleImageServerConnection);
 const discoveryServer = dgram.createSocket("udp4");
 
 discoveryServer.on("message", (msg, rinfo) => {
-  handleDiscoveryServerConnection(msg, rinfo, (msg, port) => {
-    discoveryServer.send(msg, port, rinfo.address);
-  });
+  handleDiscoveryServerConnection(
+    msg,
+    rinfo,
+    (msg, port, address, callback) => {
+      discoveryServer.send(msg, port, address, callback);
+    }
+  );
 });
 
 mainServer.listen(config.MAIN_SERVER_PORT, () => {
