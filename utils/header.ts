@@ -1,3 +1,7 @@
+export function bufferToIp(buffer: Buffer): string {
+  return `${buffer[0]}.${buffer[1]}.${buffer[2]}.${buffer[3]}`;
+}
+
 type Config = {
   ipAddress: Buffer;
   status: number;
@@ -23,7 +27,7 @@ export function createDataBuffer(dataBuffer: Buffer, config: Config): Buffer {
   statusBuffer.writeUInt8(status, 0);
 
   // Calculate the data length (dataBuffer length)
-  const dataLength = dataBuffer.length ; // The last 6 bytes of padding
+  const dataLength = dataBuffer.length; // The last 6 bytes of padding
   const dataLengthBuffer = Buffer.alloc(1);
   dataLengthBuffer.writeUInt8(dataLength, 0);
 
@@ -52,7 +56,10 @@ type Header = {
   dataLength: number;
 };
 
-export function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer } {
+export function decodeDataBuffer(buffer: Buffer): {
+  header: Header;
+  data: Buffer;
+} {
   // Extract the control word (first 8 bytes)
   const controlWord = buffer.subarray(0, 8).toString("ascii");
 
@@ -69,10 +76,8 @@ export function decodeDataBuffer(buffer: Buffer): { header: Header; data: Buffer
   // Extract the data length (next 1 byte)
   const dataLength = buffer.readUInt8(16);
 
-  const paddingBuffer2 = buffer.subarray(17 + dataLength, 20);
-
   // Extract the data (next dataLength bytes)
-  const data = buffer.subarray(20, 20 + dataLength);
+  const data = buffer.subarray(19, 19 + dataLength);
 
   // Construct the header object
   const header: Header = {
