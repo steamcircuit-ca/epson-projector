@@ -1,0 +1,23 @@
+- CUDP1: "45454d5030313030ac1000e20100000030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  NOTE: "Client searches for projectors on the network"
+  PORT: 3620
+  PROTOCOL: UDP
+  DATA:
+    "45454d5030313030": "EEMP0100"  # Control Word ASCII
+    "ac1000e2": "172 016 000 266"   # Client IP address
+    "01": "01"                      # Status
+    "000000": "000"                 # Padding
+    "30": "48"                      # Data Length
+    "000000..." : "000"             # Data
+    "000000": "000"                 # Padding
+
+- PJUDP1: ""
+  NOTE: "Projector responds to client, client listens on port 3620 during a search"
+  PORT: 3620
+  PROTOCOL: UDP
+  DATA:
+    "45454d5030313030": "EEMP0100"  # Control Word
+    "ac1000e2": "172 016 000 266"      # Client IP address
+    "01": "01"                       # Status
+    "000000": "000"                 # Padding
+    "30": "48"                      # Data Length
