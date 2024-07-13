@@ -5,22 +5,15 @@ import {
   createDataBuffer,
   decodeDataBuffer,
 } from "../utils/header";
-
-const projectorNameString =
-  "01000000454230303533303200000000000000000000000000000000000000000000000001000c00000100020c0000003030353330320000000000000000000000000000000000000000";
-const projectNameBuffer = Buffer.from(projectorNameString, "hex");
-
-const extendedDataString =
-  "303035333032000000000000000000000000000000000000000000ba000001040c000000020650423030000003068007b0040000040602008007b00405580709080000000800080080004000e001380400000000070b080000000800080010001000e001380400000000070d080000000800080010001000e0013804000000000000080000000800080010001000e001380400000000070a0100010c022d0000000008089f06f0dd000000000a0a002f0202320401000000000b0b00010a0b09070c02131415160d0a000104401f0000000000000e010005";
-const extendedDataBuffer = Buffer.from(extendedDataString, "hex");
+import { PJ_INFO_1, PJ_INFO_2, PJ_INFO_3 } from "../utils/constants";
 
 export function handleMainServerConnection(socket: TCPSocket) {
-  console.log("\n\n--Start--");
+  console.log("\n\n--Start Main Server--");
   socket.on("data", (data) => {
     const decoded = decodeDataBuffer(data);
     console.log("Status", decoded.header.status);
     if (decoded.header.status === 2) {
-      const status2Reponse = createDataBuffer(projectNameBuffer, {
+      const status2Reponse = createDataBuffer(Buffer.from(PJ_INFO_1), {
         controlWord: "EEMP0100",
         ipAddress: decoded.header.ipAddress,
         status: 3,
@@ -29,7 +22,7 @@ export function handleMainServerConnection(socket: TCPSocket) {
       socket.write(status2Reponse);
 
       setTimeout(() => {
-        const status2Reponse = createDataBuffer(extendedDataBuffer, {
+        const status2Reponse = createDataBuffer(Buffer.from(PJ_INFO_3), {
           controlWord: "EEMP0100",
           ipAddress: decoded.header.ipAddress,
           status: 21,
@@ -45,7 +38,7 @@ export function handleMainServerConnection(socket: TCPSocket) {
         "ProjectorName",
         decoded.data.subarray(48, 55).toString("ascii")
       );
-      const header = createDataBuffer(projectNameBuffer, {
+      const header = createDataBuffer(Buffer.from(PJ_INFO_3), {
         controlWord: "EEMP0100",
         ipAddress: decoded.header.ipAddress,
         status: 5,
@@ -55,7 +48,7 @@ export function handleMainServerConnection(socket: TCPSocket) {
     } else if (decoded.header.status === 10) {
       console.log("Header", decoded.header);
 
-      const header = createDataBuffer(Buffer.from(projectNameBuffer), {
+      const header = createDataBuffer(Buffer.from(PJ_INFO_1), {
         controlWord: "EEMP0100",
         ipAddress: decoded.header.ipAddress,
         status: 5,
@@ -64,7 +57,7 @@ export function handleMainServerConnection(socket: TCPSocket) {
       socket.write(header);
 
       setTimeout(() => {
-        const header = createDataBuffer(Buffer.from(extendedDataBuffer), {
+        const header = createDataBuffer(Buffer.from(PJ_INFO_3), {
           controlWord: "EEMP0100",
           ipAddress: decoded.header.ipAddress,
           status: 5,
@@ -84,7 +77,7 @@ export function handleImageServerConnection(socket: TCPSocket) {
   socket.on("data", (data) => {
     const decoded = decodeDataBuffer(data);
     console.log("Image Server Connection", decoded);
-    const header = createDataBuffer(projectNameBuffer, {
+    const header = createDataBuffer(Buffer.from(PJ_INFO_1), {
       controlWord: "EPRD0600",
       ipAddress: decoded.header.ipAddress,
       status: 0,
@@ -108,26 +101,35 @@ export function handleDiscoveryServerConnection(
     callback?: (error: Error | null, bytes: number) => void
   ) => void
 ) {
-  const decodedData = decodeDataBuffer(msg);
+  console.log("\n\n--Start Discovery Server--");
 
+  const decodedData = decodeDataBuffer(msg);
+  console.log(decodedData.header);
   if (decodedData.header.status === 1) {
-    const discoveryResponse = createDataBuffer(projectNameBuffer, {
+    const pjInfo1 = createDataBuffer(Buffer.from(PJ_INFO_1, 'hex'), {
+      controlWord: "EEMP0100",
+      ipAddress: decodedData.header.ipAddress,
+      status: 1,
+    });
+
+    const pjInfo2 = createDataBuffer(Buffer.from(PJ_INFO_2, 'hex'), {
       controlWord: "EEMP0100",
       ipAddress: decodedData.header.ipAddress,
       status: 3,
     });
 
-    const dataResponse = createDataBuffer(extendedDataBuffer, {
+    const pjInfo3 = createDataBuffer(Buffer.from(PJ_INFO_3, 'hex'), {
       controlWord: "EEMP0100",
       ipAddress: decodedData.header.ipAddress,
       status: 21,
     });
 
-    send(discoveryResponse, 3620, rinfo.address);
+    send(pjInfo1, 3620, rinfo.address);
 
-    setTimeout(() => {
-      send(dataResponse, 3620, rinfo.address);
-    }, 200);
+    send(pjInfo2, 3620, rinfo.address);
+
+    send(pjInfo3, 3620, rinfo.address);
+
   } else if (decodedData.header.status === 4) {
     console.log("\n\nIMPORTANT MESSAGE UDP CODE 4");
   }
