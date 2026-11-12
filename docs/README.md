@@ -1,5 +1,10 @@
 # Epson Wireless Projector — Protocol Specification
 
+> Independent work, not affiliated with or endorsed by Seiko Epson
+> Corporation. Epson and iProjection are trademarks of Seiko Epson
+> Corporation, used here only to describe compatibility. See the
+> [root README's disclaimer](../README.md#disclaimer).
+
 This is the reverse-engineered wire protocol used by Epson's *iProjection*
 wireless projector line, as implemented by the reusable library in
 [`lib/`](../lib/) (`lib/client/`, `lib/simulator/`, `lib/shared/` — see
@@ -117,35 +122,38 @@ in [`reverse-engineering-todo.md`](./reverse-engineering-todo.md). The
 biggest items:
 
 - **No hardware testing.** Neither client has been run against a real
-  projector. In particular, `lib/client` opens the video socket on `0x16`,
-  but the real app opens it on `0x10`. That may matter.
+  projector. `lib/` follows the real app's behaviour as far as the
+  captures show it (see
+  [control § How `lib/` compares](./eemp-control-protocol.md#how-lib-compares-with-the-real-app)).
 - **The second video socket** is always opened and always idle (audio?).
 - **Features never captured:** projector keyword/PIN, multiple users and
   split screen, error responses, moving video.
-- **`lib/` doesn't implement** teardown, heartbeats from the projector
-  side, reconnects, or the "in use" replies. See
-  [control § What `lib/` does differently](./eemp-control-protocol.md#what-lib-does-differently-from-the-real-app).
 
 ## Provenance
 
 This spec is derived from:
 
-- `captures/*.pcapng` — raw packet captures of a real iProjection app
-  talking to a real projector (app `192.168.84.53`, projector `192.168.84.226`,
-  name `EB005301`, MAC `00:00:5e:00:53:01`).
-- The working TypeScript implementation that replays and interoperates with
-  those captures: `lib/shared/header.ts`, `lib/shared/constants.ts`,
-  `lib/shared/eprd.ts`, `lib/client/session.ts`, `lib/simulator/handlers.ts`.
+- Five raw packet captures of the real iProjection app talking to a real
+  projector (app `192.168.84.53`, projector `192.168.84.226`). **They're
+  not published.** They hold device identifiers and unrelated network
+  traffic, so `captures/` is gitignored and exists only on the author's
+  machine. The projector's MAC address and name are replaced with
+  placeholders throughout these docs (MAC `00:00:5e:00:53:01`, name
+  `EB005301`).
+- `lib/shared/messages.ts`, whose builders reproduce every captured
+  message byte for byte when given the captured field values. That was
+  checked against all five captures before they were made private.
 
 - [`second-projector-samples.md`](./second-projector-samples.md) — two
   hand-copied messages from a different projector (`EB005302`), kept from
   the repo's earliest notes.
 
-Two tools make every capture claim reproducible:
-`python3 tools/eemp_dump.py captures/<file>.pcapng` lists every control
-message with TCP streams reassembled, and
-`python3 tools/session_timeline.py captures/<file>.pcapng` gives a
-timestamped timeline including the video stream and TCP open/close.
+Two tools let you check these claims against captures of your own (any
+`.pcapng` of the app talking to a projector):
+`python3 tools/eemp_dump.py <file>.pcapng` lists every control message
+with TCP streams reassembled, and
+`python3 tools/session_timeline.py <file>.pcapng` gives a timestamped
+timeline including the video stream and TCP open/close.
 
 The earliest notes (`protocol.md`, `exchange.yaml`, `projector/*.js`, now
 removed; see git history) read the header wrong. They put the

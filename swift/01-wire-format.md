@@ -56,22 +56,49 @@ static func encodeMessage(
 ## Building a message
 
 ```swift
-let clientIP: [UInt8] = [192, 168, 1, 50]
+let clientIP: [UInt8] = [192, 168, 1, 10]
 
 let probeMessage = EpsonWire.encodeMessage(
-    controlWord: "EEMP0100",
+    controlWord: EpsonWire.eempControlWord,   // "EEMP0100"
     ipAddress: clientIP,
-    status: 2,       // probe
+    status: EempFamily0Status.probe,          // 2
     family: 0,
-    payload: EpsonTemplates.zeroPayload48
+    payload: EempPayloads.searchPayload()     // 48 zero bytes
 )
 // probeMessage is 20 + 48 = 68 bytes, ready to write to the socket
 ```
 
-In practice you won't call `encodeMessage` directly for the control
-channel — use the pre-built helpers in `EpsonClientMessages` (see
-[02-control-channel.md](./02-control-channel.md)), which fill in the right
-control word, status, family, and payload template for each step.
+`EpsonWire.eempMessage(ipAddress:status:family:payload:)` is the same thing
+with the control word filled in. In practice you won't call either directly
+for the control channel. Use the helpers in `EpsonClientMessages` (see
+[02-control-channel.md](./02-control-channel.md)), which pick the right
+status and family and build the payload for each step.
+
+## Payload layout
+
+Control-channel payloads aren't opaque blobs. `EempPayloads` builds every
+one field by field (a port of `lib/shared/messages.ts`), so the bytes come
+from your own identity and the projector's, not from a capture. The shape,
+in full in
+[`../docs/eemp-control-protocol.md § Payload layout`](../docs/eemp-control-protocol.md#payload-layout):
+
+- Every non-empty payload starts with a **prefix**: 48 bytes (byte 0 =
+  `0x00`, "short") or 74 bytes (byte 0 = `0x01`, "long": identity reply,
+  connect request, connect accept).
+- **Byte 1 = `0x01` means a body follows**: a `UInt32` LE body length, then
+  TLV records.
+- In the short prefix, `UInt32` LE fields at offsets 4 and 8 carry small
+  values (for example `0x16` has `@8 = 1`, and in layout messages `@4` is
+  the state version).
+- A **TLV record** is `tag u32 LE | length u32 LE | value`. Containers
+  nest, and a list is a `u32 LE` count followed by the entries.
+  `EempTLV.record`, `EempTLV.list` and `EempTLV.parse` handle these.
+- Strings: the client name (TLV `0x01`) is **UTF-16LE**. The projector
+  name is ASCII, zero-padded to 32 bytes.
+
+The capabilities reply (`0x15`) is the one exception with its own
+`[type u8][len u8]` record format. `EempPayloads.parseCapabilities` reads
+it.
 
 ## Decoding a header
 

@@ -1,11 +1,9 @@
 # Video Channel (`EPRD0600`, TCP port 3621)
 
-Opened the moment you send the stream ack in response to the control
-channel's `0x16` "start streaming" signal (see
-[02-control-channel.md](./02-control-channel.md)).
-(The real app opens it, plus a second idle connection, as soon as it
-receives `0x10`. See [README § Before testing on real hardware](./README.md#before-testing-on-real-hardware).) Builders are in
-`EpsonVideo` in [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift).
+Opened when the control channel sends `0x10`/family 1 ("open video
+channel"), and written to once it sends `0x16`/family 0 ("start
+streaming"). See [02-control-channel.md](./02-control-channel.md#3-session-new-tcp-connection).
+Builders are in `EpsonVideo` in [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift).
 
 ## Direction: you only send
 
@@ -16,38 +14,47 @@ sanity-check your own output against itself, e.g. in a test).
 
 ## The sequence
 
-1. Open a new TCP connection to the projector's IP, port 3621.
-2. Send **one** hello message.
-3. Send a FramebufferUpdate message repeatedly — once per frame you want
-   to display. There's no confirmed real-world timing requirement; this
-   repo's reference implementation uses 500ms as a reasonable default.
+1. On `0x10`, open **two** new TCP connections to the projector's IP,
+   port 3621. Only the first carries data. The second carries nothing in
+   any capture but the real app keeps it open for the whole session
+   (probably reserved for audio), so open it too and close it with the
+   first.
+2. On `0x16`, send **one** hello message on the first connection,
+   immediately followed by your first frame. (Then send the optional
+   `0x27` on the control channel.)
+3. Send a FramebufferUpdate whenever the screen changes. The real app
+   doesn't stream at a fixed rate.
 
 ```swift
-let videoConnection = NWConnection(host: NWEndpoint.Host(host), port: 3621, using: .tcp)
-videoConnection.stateUpdateHandler = { state in
-    guard case .ready = state else { return }
-    videoConnection.send(content: Data(EpsonVideo.hello(clientIP: myIP)), completion: .contentProcessed { _ in })
-    // then start a repeating timer sending EpsonVideo.update(...)
-}
-videoConnection.start(queue: .main)
+// on 0x10
+let video = NWConnection(host: NWEndpoint.Host("192.168.1.20"), port: 3621, using: .tcp)
+let idle = NWConnection(host: NWEndpoint.Host("192.168.1.20"), port: 3621, using: .tcp)
+video.start(queue: .main)
+idle.start(queue: .main)
+
+// on 0x16
+video.send(content: Data(EpsonVideo.hello(clientIP: myIP, size: framebuffer)), completion: .contentProcessed { _ in })
+video.send(content: Data(EpsonVideo.update(clientIP: myIP, rects: firstFrameTiles)), completion: .contentProcessed { _ in })
 ```
 
 ## The hello message
 
 Sent once. **Little-endian length** (see [01-wire-format.md](./01-wire-format.md#the-endianness-rule--read-this-twice)
-— this is the one EPRD0600 message that isn't big-endian). The 46-byte
-payload is a fixed, captured blob (`EpsonTemplates.eprdInit`) — send it
-verbatim, there's nothing to fill in:
+— this is the one EPRD0600 message that isn't big-endian).
+`EpsonVideo.helloPayload(size:)` builds the 46-byte payload: magic `0xcc`,
+the framebuffer width/height (u16 BE), a 16bpp RGB565 pixel format, and a
+trailer that repeats the size. The only input is the size:
 
 ```swift
-connection.send(content: Data(EpsonVideo.hello(clientIP: myIP)), completion: .contentProcessed { _ in })
+// From the projector's capabilities reply (record 0x04), default 1280×800.
+let framebuffer = EempPayloads.parseCapabilities(capabilitiesPayload).framebuffer ?? EpsonVideo.defaultFramebuffer
+connection.send(content: Data(EpsonVideo.hello(clientIP: myIP, size: framebuffer)), completion: .contentProcessed { _ in })
 ```
 
-It declares a 1280×800 framebuffer and 16bpp RGB565 pixel format, but in
-practice the actual frames you send can be any size — see
+For 1280×800 it's byte-identical to the real app's hello. The pixel format
+isn't used for anything, since every frame is JPEG. See
 [`../docs/eprd-video-protocol.md`](../docs/eprd-video-protocol.md#hello-message)
-for the full byte-level breakdown if you're curious, none of it is
-something you need to compute yourself.
+for the full byte-level breakdown.
 
 ## FramebufferUpdate messages — the actual video content
 
@@ -65,8 +72,15 @@ struct VideoRect {
 }
 ```
 
-The simplest case — one full-frame rect per update, e.g. from a
-`UIImage`'s JPEG representation:
+**Keep each rect within the projector's maximum rect size**: 656×416 on
+the captured projector (`EempPayloads.defaultMaxRect`), reported per unit
+as `parseCapabilities(_:).maxRect`. The real app always sends its
+1280×800 screen as the same four tiles: 656×416, 624×416, 656×384 and
+624×384, at (0,0), (656,0), (0,416) and (656,416). A single full-screen
+rect may be rejected by real hardware.
+
+Building one rect from a `UIImage`'s JPEG representation (crop your frame
+into tiles first, one JPEG per tile):
 
 ```swift
 guard let uiImage = /* your captured frame */,
@@ -89,9 +103,8 @@ Important constraints on the JPEG itself:
 - **No re-encoding, no header stripping.** The bytes go on the wire exactly
   as they come out of the encoder — this is literally an embedded JPEG
   file, not a raw pixel buffer.
-- Multiple rects in one update are just multiple tiles of one frame (e.g.
-  splitting a screen into quadrants) — see `EpsonVideo.update`'s
-  implementation for the exact repeated-rect layout if you want to tile.
+- Multiple rects in one update are just multiple tiles of one frame —
+  pass all four tiles to one `EpsonVideo.update` call.
 
 ## What's actually happening on the wire, byte by byte
 
@@ -119,16 +132,16 @@ in [`../docs/eprd-video-protocol.md`](../docs/eprd-video-protocol.md).
 
 ## Frame cadence
 
-Not a confirmed protocol requirement — pick something reasonable and
-adjust based on how it looks:
+The real app sends a frame only when its screen changes. Nothing on the
+video channel needs keeping alive (the control channel's heartbeats do
+that), so a static image can be sent once. For live content, send on
+change and cap the rate at whatever your JPEG encoder and the network
+manage. Faster updates mean smoother video but more bandwidth and
+encoding cost. No maximum rate has been confirmed against real hardware.
 
-```swift
-Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-    self?.sendCurrentFrame()
-}
-```
+## Closing
 
-Faster updates mean smoother video but more bandwidth and JPEG-encoding
-CPU cost; slower updates are cheaper but laggier. 500ms (2 fps) is what
-this repo's reference client defaults to, purely as a starting point, not
-because it's been confirmed as correct or optimal against real hardware.
+When you disconnect, close both 3621 connections **first**, then send
+`0x04` on the control channel (see
+[02-control-channel.md § Teardown](./02-control-channel.md#5-teardown)).
+If the projector sends `0x07`, it has already closed them.

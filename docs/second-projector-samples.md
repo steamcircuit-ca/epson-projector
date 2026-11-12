@@ -10,6 +10,9 @@ fixed — see [`reverse-engineering-todo.md`](./reverse-engineering-todo.md).
 
 Provenance is thinner than the captures: these are hex strings copied by
 hand into notes, with no surrounding pcap. The header IP is `192.168.1.45`.
+As in the other docs, device names are replaced with placeholders
+(`EB005302` here, `EB005301` for the captured unit), including inside the
+hex dumps.
 
 ## Status `0x03` — identity reply (74-byte payload)
 
@@ -18,8 +21,7 @@ hand into notes, with no surrounding pcap. The header IP is `192.168.1.45`.
 01000000454230303533303200000000000000000000000000000000000000000000000001000c00000100020c0000003030353330320000000000000000000000000000000000000000
 ```
 
-Side by side with the captured projector's `PJ_INFO_2`
-(`lib/shared/constants.ts`):
+Side by side with the captured projector's idle identity reply:
 
 | Payload offset | `EB005302` | `EB005301` (captured) | Reading |
 |---|---|---|---|
@@ -30,9 +32,10 @@ Side by side with the captured projector's `PJ_INFO_2`
 | 48–53 | `"005302"` (ASCII) | `00005e005301` (MAC) | **differs in kind** — a short ASCII name vs. a MAC address |
 | 54–73 | zeros | zeros | same |
 
-The name `EB005302` looks like `"EB"` + the last three bytes of the MAC in
-hex (`EB005301` ↔ MAC `…:00:53:01`), so this projector's MAC likely ends
-`…:00:53:02`. Unconfirmed.
+Real units name themselves `"EB"` + the last three bytes of their MAC in
+hex. Both original names followed that pattern. This projector's MAC
+wasn't recorded, and the short field at offset 48 held the name's MAC
+part instead.
 
 ## Status `0x15` — capabilities reply (216-byte payload)
 
@@ -43,7 +46,7 @@ Note **216 bytes**, versus 214 from the captured projector.
 303035333032000000000000000000000000000000000000000000ba000001040c000000020650423030000003068007b0040000040602008007b00405580709080000000800080080004000e001380400000000070b080000000800080010001000e001380400000000070d080000000800080010001000e0013804000000000000080000000800080010001000e001380400000000070a0100010c022d0000000008089f06f0dd000000000a0a002f0202320401000000000b0b00010a0b09070c02131415160d0a000104401f0000000000000e010005
 ```
 
-Visible differences from `PJ_INFO_3`:
+Visible differences from the captured projector's capabilities reply:
 
 - Starts with ASCII `"005302"` where the captured one starts with the MAC
   (the same swap as the identity reply's offset 48).

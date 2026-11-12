@@ -1,5 +1,10 @@
 # Epson Projector Client — Swift Implementation Guide
 
+> Independent work, not affiliated with or endorsed by Seiko Epson
+> Corporation. Epson and iProjection are trademarks of Seiko Epson
+> Corporation, used here only to describe compatibility. See the
+> [root README's disclaimer](../README.md#disclaimer).
+
 Everything you need to build the *client* side of Epson's wireless
 "iProjection" protocol into an iOS app: connect to a projector on the local
 network, negotiate a session, and push a video stream to it.
@@ -11,60 +16,60 @@ disagree, trust this folder less than `docs/` — `docs/` is the byte-level
 spec derived directly from packet captures; this folder is an
 implementation guide for one specific client.
 
-**Verification.** Every byte layout and code snippet here was compiled and
-run for real during authoring: [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift)
-was built standalone with `swiftc`, its pure functions were checked against
-known-good values pulled directly from the TypeScript source and from real
-JPEG files in this repo, and the *entire client flow* (probe → connect →
-state exchange → start-stream signal → video stream) was run over real TCP
-sockets against this repo's own projector simulator (`lib/simulator`) and
-round-tripped correctly. It has **not** been run against physical projector
-hardware — see [`../docs/README.md § Known gaps`](../docs/README.md#known-gaps)
-for what's still unconfirmed about the protocol itself (session teardown,
-one unknown UDP status code, the capabilities payload).
+**Verification.** [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift)
+builds every payload field by field. It's a port of
+`lib/shared/messages.ts` (and the EPRD hello from `lib/shared/eprd.ts`),
+whose builders reproduce every message in the original captures
+byte-for-byte given the same field values. The Swift builders were
+compiled with `swiftc` and checked byte-for-byte against the TypeScript
+builders' output for a set of placeholder identities, and its parsers were
+round-tripped. The flow in this guide follows the real iProjection app as
+documented in
+[`../docs/eemp-control-protocol.md`](../docs/eemp-control-protocol.md#session-establishment).
+It has **not** been run against physical projector hardware — see
+[`../docs/README.md § Known gaps`](../docs/README.md#known-gaps) for
+what's still unconfirmed about the protocol itself.
 
 ## Before testing on real hardware
 
-This guide mirrors `lib/client`, which works against the simulator. A full
-analysis of the captures
-([`../docs/eemp-control-protocol.md`](../docs/eemp-control-protocol.md#what-lib-does-differently-from-the-real-app))
-found that the real iProjection app behaves differently in ways a real
-projector may care about:
+The guide follows the real app's behaviour as seen in the captures
+(video on `0x10` with two sockets, 15 s heartbeats, optional `0x27`,
+`0x04` → `0x05` teardown, handling `0x07`, tiled frames). What's still
+untested or unknown:
 
-- **It opens the video connection on `0x10`, not `0x16`.** It actually
-  opens *two* TCP connections to 3621. The second never carries data and
-  is probably reserved for audio. If a real projector waits for the video
-  connection before sending `0x16`, a client following this guide would
-  stall. Opening it on `0x10` is the safer choice.
-- **Heartbeats every ~15 s**, not 3 s. The projector sends its own 15 s
-  heartbeats too. They aren't replies to yours.
-- **Clean disconnect:** close the 3621 sockets, send `0x04`/family 1
-  (empty), and wait for `0x05`. Also handle `0x07`/family 1, which means
-  the projector ended the session.
-- **Frames:** the app always sends the 1280×800 screen as the same four
-  JPEG tiles (656/624 × 416/384), and only when the screen changes.
-  656×416 is the largest rect the projector advertises, so a single
-  full-screen rect may be rejected.
+- **Nothing here has run against a real projector.** The behaviour comes
+  from captures of one projector model; a second model's capabilities
+  differ (see `parseCapabilities`).
+- **Unknown bytes are copied, not understood.** A few connect-request
+  fields (an apparent app version and netmask at offsets 12–23 and 44)
+  and several capabilities records are sent as captured constants.
+- **Resume / multi-user** paths (`0x0f`, more than one device on screen)
+  aren't covered. See
+  [`../docs/reverse-engineering-todo.md`](../docs/reverse-engineering-todo.md).
 
 ## Documents
 
 | File | Covers |
 |---|---|
-| [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift) | Drop-in codec: header pack/unpack, message templates, video/JPEG framing, IP helpers. No networking code — transport-agnostic on purpose. |
-| [`01-wire-format.md`](./01-wire-format.md) | The 20-byte header, endianness rules, and how to reassemble messages out of a TCP byte stream. |
-| [`02-control-channel.md`](./02-control-channel.md) | Full client-side flow on port 3620: probe, connect, session, keepalive. Exact bytes, exact order. |
-| [`03-video-channel.md`](./03-video-channel.md) | The video stream on port 3621: hello message, JPEG framebuffer updates. |
+| [`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift) | Drop-in codec: header pack/unpack, field-by-field payload builders and parsers, video/JPEG framing, IP helpers. No networking code — transport-agnostic on purpose. |
+| [`01-wire-format.md`](./01-wire-format.md) | The 20-byte header, endianness rules, payload/TLV layout, and how to reassemble messages out of a TCP byte stream. |
+| [`02-control-channel.md`](./02-control-channel.md) | Full client-side flow on port 3620: probe, connect, layout, heartbeats, teardown. Exact order. |
+| [`03-video-channel.md`](./03-video-channel.md) | The video stream on port 3621: hello message, JPEG framebuffer updates, tiling. |
 
 ## The shape of the client
 
-Two TCP connections, in sequence, to the same host:
+Three TCP connections to the same host:
 
-1. **Control connection**, port 3620 — send a connect request, exchange a
-   few setup messages, then sit idle sending a keepalive every ~3 seconds
-   until the projector signals "start streaming."
-2. **Video connection**, port 3621 — opened only after that signal. One
-   hello message, then a JPEG frame pushed repeatedly. This connection is
-   push-only: the projector never sends anything back on it.
+1. **Control connection**, port 3620 — send a connect request, ask to be
+   put on screen, and send a heartbeat every 15 seconds for as long as
+   the session lasts. The projector tells you when to open video (`0x10`)
+   and when to start streaming (`0x16`). Disconnect with `0x04` and wait
+   for `0x05`; the projector may also end the session with `0x07`.
+2. **Video connections**, port 3621 — two of them, opened on `0x10`. On
+   `0x16` the first gets one hello message and then a JPEG frame
+   (as four tiles) whenever the screen changes. The second stays open but
+   idle, like the real app's. Both are push-only: the projector never
+   sends anything back on them.
 
 (There's also a UDP discovery step and a pre-connect TCP probe that happen
 *before* all this — both optional in practice, see
@@ -173,26 +178,34 @@ point-to-point TCP, which `NWConnection` handles cleanly with no surprises.
 ### 4. Your device's own IP address
 
 The wire header embeds the client's own IP in *every* message you send,
-and two of the session templates have the original capture's client IP
-baked in that needs patching to your device's real IP before sending — see
+and the connect and layout requests carry it again inside the payload, as
+part of your `ClientIdentity`:
+
+```swift
+let ipString = EpsonNetworking.currentWiFiIPv4Address()!          // e.g. "192.168.1.10"
+let client = ClientIdentity(ip: EpsonNetworking.ipv4StringToBytes(ipString)!, name: "Test iPad")
+```
+
 `EpsonNetworking.currentWiFiIPv4Address()` in
-[`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift), which wraps the
-standard (if verbose) `getifaddrs`/`en0` C-interop dance. This part *was*
-compiled and run for real during authoring — it correctly found this
-machine's real Wi-Fi IP.
+[`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift) wraps the standard
+(if verbose) `getifaddrs`/`en0` C-interop dance. The `name` is what the
+projector displays for your device (use the device name, or let the user
+choose).
 
 ## Suggested build order
 
 1. Get `EpsonProjectorKit.swift` into your project as-is.
 2. Wire up `NWConnection` to port 3620, hardcode a target IP (skip
-   discovery for now), and get through probe → connect → session per
-   [02-control-channel.md](./02-control-channel.md) — log every message
-   status/family you receive so you can see the state machine advance.
-3. Once you see the `0x16`/family-0 "start streaming" signal, open the
-   video connection and stream one static JPEG per
+   discovery for now), and get through probe → connect → layout request
+   per [02-control-channel.md](./02-control-channel.md) — log every
+   message status/family you receive so you can see the state machine
+   advance.
+3. Open the two video connections on `0x10`, and on `0x16` send the hello
+   and one static frame (as four tiles) per
    [03-video-channel.md](./03-video-channel.md) — confirm the projector
    actually shows it before building a live capture pipeline.
-4. Add discovery and/or a manual host-entry UI on top.
+4. Add clean teardown (`0x04` → `0x05`) and handle `0x07`.
+5. Add discovery and/or a manual host-entry UI on top.
 
 You can validate steps 2–3 against this repo's own simulator before ever
 touching real hardware: `npm run dev:simulator` in the repo root, then

@@ -3,9 +3,17 @@
 Discovery and session control for Epson wireless projectors. Control word
 `EEMP0100`, port 3620 (UDP and TCP).
 
-Implemented by: `lib/shared/header.ts` (framing), `lib/shared/constants.ts`
-(captured payload templates), `lib/client/discovery.ts` + `lib/client/session.ts`
-(client side), `lib/simulator/handlers.ts` (simulator side).
+Implemented by: `lib/shared/header.ts` (framing), `lib/shared/messages.ts`
+(a field-by-field builder and parser for every payload below),
+`lib/client/discovery.ts` + `lib/client/session.ts` (client side),
+`lib/simulator/handlers.ts` (simulator side).
+
+> **Identifiers in this document are placeholders.** The captured
+> projector's MAC address and the names derived from it have been replaced
+> with values from the documentation-reserved MAC range (RFC 7042):
+> MAC `00:00:5e:00:53:01`, name `EB005301`. Real units use their own MAC
+> and `"EB"` + the last three MAC bytes. Hex dumps have been edited the
+> same way, so they're still byte-accurate apart from those fields.
 
 Everything below was checked against all five captures with
 `tools/eemp_dump.py`. Claims are marked **Verified** (seen byte-for-byte,
@@ -29,7 +37,7 @@ Verified.
 - [Identity reply (`0x03`)](#identity-reply-0x03)
 - [Capabilities reply (`0x15`)](#capabilities-reply-0x15)
 - [Connect request (`0x01`/fam 1)](#connect-request-0x01fam-1)
-- [What `lib/` does differently from the real app](#what-lib-does-differently-from-the-real-app)
+- [How `lib/` compares with the real app](#how-lib-compares-with-the-real-app)
 
 ## Wire frame header
 
@@ -70,7 +78,8 @@ The projector's UDP identity reply to the app at `192.168.84.53`, from
 ```
 
 `payloadLength` is `4a 00 00 00`, which is 74 read little-endian. The
-74-byte payload is exactly `PJ_INFO_2` in `lib/shared/constants.ts`.
+74-byte payload is the idle [identity reply](#identity-reply-0x03), which
+`identityPayload()` in `lib/shared/messages.ts` builds.
 
 ## Payload layout
 
@@ -109,29 +118,35 @@ small values that distinguish messages without a body (for example
 "`@n = v`" means `uint32 LE` at payload offset `n` is `v`, with everything
 else zero.
 
-| Fam | Status | Direction | Name | Payload | In `lib/`? |
+| Fam | Status | Direction | Name | Payload | Builder (`lib/shared/messages.ts`) |
 |---|---|---|---|---|---|
-| 0 | `0x01` | App → broadcast (UDP) | Search | 48 zero bytes | yes |
-| 0 | `0x02` | App → projector (UDP unicast or TCP) | Probe | 48 zero bytes | yes |
-| 0 | `0x03` | Projector → app | Identity, idle | 74 B, long prefix only | yes (`PJ_INFO_2`) |
-| 0 | `0x03` | Projector → app | Identity, in use | 176 B, long prefix + body | no |
-| 1 | `0x1a` | Projector → app | "In use" notice | 48 zero bytes. Sent just before the 176-byte identity. | no |
-| 0 | `0x15` | Projector → app | Capabilities | 214 B, own format | yes (`PJ_INFO_3`, opaque) |
-| 1 | `0x01` | App → projector | Connect request | 289 B | yes (`C_CONNECT_REQUEST`) |
-| 1 | `0x02` | Projector → app | Connect accept | 240 B | yes (`PJ_CONNECT_ACCEPT`) |
-| 1 | `0x0e` | Projector → app | State broadcast | 176 B or 388 B, short prefix + body, `@4` = state version | yes (`PJ_PUSH_0E_A/B`) |
-| 1 | `0x08` | App → projector | Layout request | 376 B, `@4 = 0` | yes (`C_MSG_08`) |
-| 1 | `0x09` | Projector → app | Layout accepted | 376 B, echoes `0x08`, `@4` = new state version | yes |
-| 1 | `0x10` | Projector → app | Open video channel | empty | yes (but `lib/client` ignores it) |
-| 0 | `0x16` | Projector → app | Start streaming | 48 B, `@8 = 1` | yes |
-| 1 | `0x27` | App → projector | Streaming started | 48 B, `@4 = 3`. **Optional**, see below. | yes |
-| 0 | `0x0a` | App → projector | Heartbeat | empty | yes |
-| 0 | `0x0a` | Projector → app | Heartbeat | 48 B; `@8 = 44100` on periodic ones, `0` on the first | partly |
-| 1 | `0x17` | Projector → app | Stale-session notice | 64 B: short prefix + body `{0x25: 1}` | no |
-| 1 | `0x0f` | App → projector | Resume? | empty | no |
-| 1 | `0x04` | App → projector | Disconnect request | empty | no |
-| 1 | `0x05` | Projector → app | Disconnect ack | 48 B, `@4 = 1, @8 = 1` | no |
-| 1 | `0x07` | Projector → app | Disconnected by projector | 48 B, `@4 = 1, @8 = 2` | no |
+| 0 | `0x01` | App → broadcast (UDP) | Search | 48 zero bytes | `searchPayload` |
+| 0 | `0x02` | App → projector (UDP unicast or TCP) | Probe | 48 zero bytes | `searchPayload` |
+| 0 | `0x03` | Projector → app | Identity, idle | 74 B, long prefix only | `identityPayload` / `parseIdentity` |
+| 0 | `0x03` | Projector → app | Identity, in use | 176 B, long prefix + body | `identityPayload({ connectedUsers })` |
+| 1 | `0x1a` | Projector → app | "In use" notice | 48 zero bytes. Sent just before the 176-byte identity. | `inUsePayload` |
+| 0 | `0x15` | Projector → app | Capabilities | 214 B, own format | `capabilitiesPayload` / `parseCapabilities` |
+| 1 | `0x01` | App → projector | Connect request | 289 B for a 10-character name | `connectRequestPayload` / `parseConnectRequest` |
+| 1 | `0x02` | Projector → app | Connect accept | 240 B for a 10-character name | `connectAcceptPayload` |
+| 1 | `0x0e` | Projector → app | State broadcast | 176 B or 388 B, short prefix + body, `@4` = state version | `stateBroadcastPayload` |
+| 1 | `0x08` | App → projector | Layout request | 376 B, `@4 = 0` | `layoutRequestPayload` |
+| 1 | `0x09` | Projector → app | Layout accepted | 376 B, echoes `0x08`, `@4` = new state version | `layoutAcceptedPayload` |
+| 1 | `0x10` | Projector → app | Open video channel | empty | — |
+| 0 | `0x16` | Projector → app | Start streaming | 48 B, `@8 = 1` | `startStreamPayload` |
+| 1 | `0x27` | App → projector | Streaming started | 48 B, `@4 = 3`. **Optional**, see below. | `streamStartedPayload` |
+| 0 | `0x0a` | App → projector | Heartbeat | empty | — |
+| 0 | `0x0a` | Projector → app | Heartbeat | 48 B; `@8 = 44100` on periodic ones, `0` on the first | `projectorHeartbeatPayload` |
+| 1 | `0x17` | Projector → app | Stale-session notice | 64 B: short prefix + body `{0x25: 1}` | `staleSessionPayload` |
+| 1 | `0x0f` | App → projector | Resume? | empty | — |
+| 1 | `0x04` | App → projector | Disconnect request | empty | — |
+| 1 | `0x05` | Projector → app | Disconnect ack | 48 B, `@4 = 1, @8 = 1` | `disconnectAckPayload` |
+| 1 | `0x07` | Projector → app | Disconnected by projector | 48 B, `@4 = 1, @8 = 2` | `disconnectedByProjectorPayload` |
+
+Every builder reproduces the corresponding captured messages byte for
+byte when given the same field values. That covers all 22 distinct
+message types and every variant seen (for example all 7 distinct `0x0e`
+broadcasts). Sizes that include a user entry vary with the length of the
+device name.
 
 Not seen in any capture: family 0 status `0x04`, which an early version of
 the simulator listened for. Status `0x0b` is the TLV tag of the same
@@ -374,7 +389,7 @@ Containers nest. Lists are `uint32 count` followed by entries.
 Long prefix. The idle form is the prefix alone (74 B). The in-use form
 adds a body (176 B).
 
-| Offset | Size | Idle (`PJ_INFO_2`) | In use | Meaning |
+| Offset | Size | Idle | In use | Meaning |
 |---|---|---|---|---|
 | 0 | 1 | `01` | `01` | Long prefix |
 | 1 | 1 | `00` | `01` | Body flag |
@@ -458,33 +473,24 @@ The pixel format the app declares (32 bpp) differs from the one in its
 EPRD hello (16 bpp RGB565). Since frames are JPEG anyway, neither is
 actually used for pixels.
 
-## What `lib/` does differently from the real app
+## How `lib/` compares with the real app
 
-| Behaviour | Real app (captures) | `lib/client` | `lib/simulator` |
-|---|---|---|---|
-| When to open video | On `0x10`, two sockets | On `0x16`, one socket | Accepts whatever comes |
-| `0x27` | Sent with the first frame, optional | Sent before opening video | Logs it |
-| Heartbeat | Every 15 s, independent | Every 3 s | Replies to each one (should run its own 15 s timer with `@8 = 44100`) |
-| Video frames | Only when the screen changes | Every 500 ms | — |
-| Teardown | `0x04` → `0x05`, or handles `0x07` | Just closes | Doesn't send `0x05`/`0x07` |
-| Identity while busy | `0x1a` + 176-byte form | — | Always the 74-byte idle form |
-| State version | Projector-wide counter | — | Hardcoded 1/2 |
-| UDP replies | Sent twice, from ephemeral ports | — | Sent once, from 3620 |
+`lib/client` and `lib/simulator` build every payload from their own
+identities and follow the real app's and projector's behaviour as seen in
+the captures:
 
-None of these differences matter between `lib/client` and `lib/simulator`.
-The first row is the one most likely to matter against real hardware.
+| Behaviour | Real app / projector | `lib/` |
+|---|---|---|
+| Opening video | App opens two 3621 sockets on `0x10`; projector sends `0x16` once they connect | Same. The simulator falls back to sending `0x16` after 1.5 s for clients that wait for it. |
+| `0x27` | Sent with the first frame, optional | Same |
+| Heartbeats | Each side every ~15 s, independently; 44100 in the projector's | Same |
+| Video frames | Only when the screen changes, always ≤ 656×416 per rect | `sendFrame()` on demand. Warns if a rect exceeds the projector's advertised maximum. |
+| Teardown | `0x04` → `0x05`, or `0x07` from the projector | Same (`session.disconnect()`, `simulator.disconnectAll()`) |
+| "In use" | `0x1a` + 176-byte identity while a session is held | Same |
+| Stale sessions | Projector keeps the session after an app vanishes; `0x17` on reconnect | Same |
+| State version | Projector-wide counter | Same |
+| UDP | Every message sent twice; replies from an ephemeral port to the app's 3620 | Same |
 
-### How the templates get patched
-
-`lib/client` and `lib/simulator` send the captured payloads from
-`lib/shared/constants.ts` with only the IPs swapped
-(`lib/shared/header.ts` `replaceAllBytes`):
-
-- `CAPTURE_CLIENT_IP` (`192.168.84.53`) → the live client IP.
-- `CAPTURE_PROJECTOR_IP` (`192.168.84.226`) → the live projector IP
-  (simulator only).
-
-Everything else is sent verbatim from the capture: the name
-`"VirtualBox"`, the MAC, `"EB005301"`, and the flags. So the simulator
-always claims to be projector `EB005301` (MAC `00:00:5e:00:53:01`), and
-`PJ_INFO_2`/`PJ_INFO_3` go out completely unmodified.
+Still not implemented: the resume path (`0x0f`), multi-user layouts, and
+anything about the idle second video socket. The simulator ignores which
+projector the connect request is addressed to.

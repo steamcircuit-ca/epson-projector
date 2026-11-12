@@ -10,7 +10,7 @@
 //      FramebufferUpdate: u8 type=0, u8 pad, u16 BE rect count, then rects of
 //      x/y/w/h u16 BE + encoding i32 BE = 7 (Tight), Tight payload =
 //      control byte 0x90 (JPEG) + compact length (3 bytes) + JPEG data.
-import { EPRD_CONTROL_WORD, EPRD_INIT } from "./constants";
+import { EPRD_CONTROL_WORD } from "./constants";
 import { HEADER_LENGTH } from "./header";
 
 export const TIGHT_ENCODING = 7;
@@ -38,8 +38,30 @@ function buildEprdHeader(
   return header;
 }
 
-export function buildEprdHello(ipAddress: Buffer): Buffer {
-  const init = Buffer.from(EPRD_INIT, "hex");
+// RFB PIXEL_FORMAT the app declares: 16 bpp RGB565, little-endian pixels,
+// maxes 31/63/31 (stored little-endian, unlike plain RFB), shifts 11/5/0.
+const HELLO_PIXEL_FORMAT = Buffer.from("101000011f003f001f000b0500000000", "hex");
+
+/** The 46-byte hello payload. Byte-identical to the app's for 1280x800. */
+export function eprdHelloPayload(size: { width: number; height: number }): Buffer {
+  const p = Buffer.alloc(46);
+  p.writeUInt32LE(0xcc, 0); // magic
+  p.writeUInt16BE(size.width, 4);
+  p.writeUInt16BE(size.height, 6);
+  HELLO_PIXEL_FORMAT.copy(p, 8);
+  // Trailer: two (w, h, 0, 0) groups then 6 zero bytes; meaning unconfirmed.
+  p.writeUInt16BE(size.width, 24);
+  p.writeUInt16BE(size.height, 26);
+  p.writeUInt16BE(size.width, 32);
+  p.writeUInt16BE(size.height, 34);
+  return p;
+}
+
+export function buildEprdHello(
+  ipAddress: Buffer,
+  size: { width: number; height: number } = { width: 1280, height: 800 }
+): Buffer {
+  const init = eprdHelloPayload(size);
   return Buffer.concat([buildEprdHeader(ipAddress, init.length, "LE"), init]);
 }
 

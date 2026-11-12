@@ -3,28 +3,28 @@
  "height": 800,
  "tiles": [
   {
-   "file": "tile_0.jpg",
+   "file": "card_0.jpg",
    "x": 0,
    "y": 0,
    "w": 656,
    "h": 416
   },
   {
-   "file": "tile_1.jpg",
+   "file": "card_1.jpg",
    "x": 656,
    "y": 0,
    "w": 624,
    "h": 416
   },
   {
-   "file": "tile_2.jpg",
+   "file": "card_2.jpg",
    "x": 0,
    "y": 416,
    "w": 656,
    "h": 384
   },
   {
-   "file": "tile_3.jpg",
+   "file": "card_3.jpg",
    "x": 656,
    "y": 416,
    "w": 624,

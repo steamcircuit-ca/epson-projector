@@ -95,20 +95,3 @@ export function extractMessages(buffer: Buffer): {
   }
   return { messages, rest };
 }
-
-export function replaceAllBytes(
-  buffer: Buffer,
-  find: Buffer,
-  replace: Buffer
-): Buffer {
-  if (find.length !== replace.length) {
-    throw new Error("find and replace must be the same length");
-  }
-  const result = Buffer.from(buffer);
-  let index = result.indexOf(find);
-  while (index !== -1) {
-    replace.copy(result, index);
-    index = result.indexOf(find, index + find.length);
-  }
-  return result;
-}

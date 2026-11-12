@@ -9,11 +9,13 @@ either needs new captures (*needs capture*), real hardware
 (*needs hardware*), or more decoding work on bytes already captured
 (*decodable*).
 
-Reproduce any capture observation with:
+The original captures aren't published (see
+[README § Provenance](./README.md#provenance)). To check an observation,
+capture the app talking to your own projector and run:
 
 ```sh
-python3 tools/eemp_dump.py captures/<file>.pcapng --hide 0x0a
-python3 tools/session_timeline.py captures/<file>.pcapng
+python3 tools/eemp_dump.py <file>.pcapng --hide 0x0a
+python3 tools/session_timeline.py <file>.pcapng
 ```
 
 ## Resolved from the captures
@@ -39,11 +41,10 @@ For reference, these were open before and are now documented:
 ## 1. Does the projector wait for the video sockets? (*needs hardware*)
 
 The app opens both 3621 connections on `0x10`. The projector sends `0x16`
-39–143 ms later. If the projector waits for those connections before
-sending `0x16`, then `lib/client` (which connects on `0x16`) and the Swift
-guide will **hang against real hardware**. The quickest test is to change
-`lib/client` to connect on `0x10` and see whether anything else breaks.
-Doing that is cheap insurance even before testing.
+39–143 ms later. `lib/client` now does the same, so it works either way.
+Still unknown: whether the projector actually *waits* for the video
+connections (the simulator assumes so, with a 1.5 s fallback), and what
+it does if they never come.
 
 ## 2. The second 3621 socket (*needs capture* + *needs hardware*)
 
@@ -52,8 +53,8 @@ It's always opened and always idle. Open questions:
   settle this.
 - What format does it use (EPRD framing? raw PCM at 44.1 kHz, which the
   projector heartbeat announces)?
-- Does the projector refuse the session if only one socket is opened, as
-  `lib/client` does?
+- Does the projector refuse the session if only one socket is opened?
+  (`lib/client` opens two, like the app.)
 
 ## 3. Reconnect / resume (*decodable*, but only one sample)
 
@@ -123,9 +124,9 @@ next connect replaced it.
 ## 8. Hardware validation (*needs hardware*)
 
 `lib/client` and `swift/EpsonProjectorKit.swift` have only been run
-against this repo's simulator. The differences from the real app most
-likely to matter are listed in
-[control § What `lib/` does differently](./eemp-control-protocol.md#what-lib-does-differently-from-the-real-app).
+against this repo's simulator. They follow the real app's
+behaviour as far as the captures show it. See
+[control § How `lib/` compares](./eemp-control-protocol.md#how-lib-compares-with-the-real-app).
 
 ## Video stream (EPRD0600)
 

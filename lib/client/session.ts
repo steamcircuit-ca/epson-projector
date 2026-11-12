@@ -1,128 +1,72 @@
+// Client side of a projector session, following the real app's sequence as
+// seen in the captures (docs/eemp-control-protocol.md § Session
+// establishment, § Heartbeats, § Session teardown).
 import { connect, Socket as TCPSocket } from "net";
+import os from "os";
+import { decodeDataBuffer, extractMessages, ipToBuffer } from "../shared/header";
 import {
-  createDataBuffer,
-  decodeDataBuffer,
-  extractMessages,
-  replaceAllBytes,
-} from "../shared/header";
-import {
-  CAPTURE_CLIENT_IP,
-  C_CONNECT_REQUEST,
-  C_MSG_08,
-  C_SEARCH_MESSAGE,
-  C_STREAM_ACK,
-  EEMP_CONTROL_WORD,
-} from "../shared/constants";
+  ClientIdentity,
+  DEFAULT_MAX_RECT,
+  Fam0,
+  Fam1,
+  HEARTBEAT_INTERVAL_MS,
+  ProjectorIdentity,
+  Size,
+  connectRequestPayload,
+  eempMessage,
+  layoutRequestPayload,
+  searchPayload,
+  streamStartedPayload,
+} from "../shared/messages";
 import { buildEprdHello, buildEprdUpdate, Rect } from "../shared/eprd";
+import { EPRD_FRAMEBUFFER_HEIGHT, EPRD_FRAMEBUFFER_WIDTH } from "../shared/constants";
 import { DEFAULT_PORTS } from "../shared/ports";
-import { loadTestCard } from "./frames";
+import { absorbReply, DiscoveredProjector } from "./discovery";
 
-function eempMessage(
-  clientIp: Buffer,
-  status: number,
-  family: number,
-  payloadHex: string
-): Buffer {
-  const payload = replaceAllBytes(
-    Buffer.from(payloadHex, "hex"),
-    Buffer.from(CAPTURE_CLIENT_IP, "hex"),
-    clientIp
-  );
-  return createDataBuffer(payload, {
-    ipAddress: clientIp,
-    controlWord: EEMP_CONTROL_WORD,
-    status,
-    family,
-  });
-}
-
-function logMessages(
-  socket: TCPSocket,
-  onMessage: (status: number, family: number) => void
-) {
+/** Read messages off a TCP socket, handling TCP's stream framing. */
+function onMessages(socket: TCPSocket, handle: (message: Buffer) => void) {
   let pending = Buffer.alloc(0);
   socket.on("data", (chunk) => {
     pending = Buffer.concat([pending, chunk]);
     const { messages, rest } = extractMessages(pending);
     pending = rest;
-    for (const message of messages) {
-      const { header } = decodeDataBuffer(message);
-      console.log(
-        `Main <- status=0x${header.status.toString(16)} family=${
-          header.family
-        } len=${header.dataLength}`
-      );
-      onMessage(header.status, header.family);
-    }
+    messages.forEach(handle);
   });
 }
 
 export type ProbeOptions = {
   clientIp: Buffer;
   mainPort?: number;
+  timeoutMs?: number;
 };
 
-// Pre-connect probe: TCP status 2, projector answers 0x03 + 0x15, then close.
+/**
+ * Probe: TCP status 2. The projector answers [0x1a] + 0x03 identity + 0x15
+ * capabilities, then we close.
+ */
 export function probeProjector(
   host: string,
-  { clientIp, mainPort = DEFAULT_PORTS.main }: ProbeOptions
-): Promise<void> {
+  { clientIp, mainPort = DEFAULT_PORTS.main, timeoutMs = 3000 }: ProbeOptions
+): Promise<DiscoveredProjector> {
   return new Promise((resolve, reject) => {
-    console.log(`\nProbing ${host}...`);
+    const result: DiscoveredProjector = { host };
     const socket = connect(mainPort, host, () => {
-      socket.write(
-        createDataBuffer(Buffer.from(C_SEARCH_MESSAGE, "hex"), {
-          ipAddress: clientIp,
-          controlWord: EEMP_CONTROL_WORD,
-          status: 2,
-        })
-      );
+      socket.write(eempMessage(clientIp, Fam0.probe, 0, searchPayload()));
     });
-    logMessages(socket, (status) => {
-      if (status === 21) {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`probe of ${host} timed out`));
+    }, timeoutMs);
+    onMessages(socket, (message) => {
+      absorbReply(result, message);
+      if (result.identity && result.capabilities) {
+        clearTimeout(timer);
         socket.end();
-        resolve();
+        resolve(result);
       }
     });
-    socket.on("error", reject);
-  });
-}
-
-export type StreamOptions = {
-  clientIp: Buffer;
-  imagePort?: number;
-  frameIntervalMs?: number;
-  // Defaults to the built-in test card (see ./frames.ts) if omitted.
-  rects?: Rect[];
-};
-
-// Video stream: EPRD hello + repeated Tight-JPEG framebuffer updates.
-export function streamVideo(
-  host: string,
-  { clientIp, imagePort = DEFAULT_PORTS.image, frameIntervalMs = 500, rects }: StreamOptions
-): Promise<void> {
-  const frameRects = rects ?? loadTestCard();
-  return new Promise((resolve, reject) => {
-    console.log(`\nOpening video stream to ${host}:${imagePort}...`);
-    let frames = 0;
-    let timer: NodeJS.Timeout | undefined;
-    const socket = connect(imagePort, host, () => {
-      socket.write(buildEprdHello(clientIp));
-      const sendFrame = () => {
-        socket.write(buildEprdUpdate(clientIp, frameRects));
-        frames++;
-        if (frames % 20 === 1) console.log(`Sent frame ${frames}`);
-      };
-      sendFrame();
-      timer = setInterval(sendFrame, frameIntervalMs);
-    });
-    socket.on("close", () => {
-      if (timer) clearInterval(timer);
-      console.log(`Video stream closed after ${frames} frames`);
-      resolve();
-    });
     socket.on("error", (err) => {
-      if (timer) clearInterval(timer);
+      clearTimeout(timer);
       reject(err);
     });
   });
@@ -130,52 +74,166 @@ export function streamVideo(
 
 export type ConnectOptions = {
   clientIp: Buffer;
+  /** Name shown on the projector. Defaults to this machine's hostname. */
+  clientName?: string;
+  /** The projector's identity and capabilities, from discovery or a probe. */
+  projector: DiscoveredProjector;
   mainPort?: number;
-} & StreamOptions;
+  imagePort?: number;
+  /** Ask to resume a session the projector still holds for us. */
+  resume?: boolean;
+};
 
-// Session: connect request, 0x08 state message, keepalives; when the
-// projector signals 0x16 (start projecting), ack with 0x27 and stream.
+export type CloseReason = "client" | "projector" | "connection-lost";
+
+export type ProjectorSession = {
+  /** Framebuffer size the projector accepts (capabilities record 0x04). */
+  framebuffer: Size;
+  /** Largest single rect the projector accepts. Tile frames to fit. */
+  maxRect: Size;
+  /**
+   * Send one frame. Like the real app, send only when the screen changes;
+   * there's no need to repeat an unchanged frame. Frames sent before the
+   * stream is up are queued (only the latest is kept).
+   */
+  sendFrame(rects: Rect[]): void;
+  /** Clean disconnect: close video, send 0x04, wait for 0x05. */
+  disconnect(): Promise<void>;
+  /** Resolves when the session ends, with who ended it. */
+  closed: Promise<CloseReason>;
+};
+
+/**
+ * Open a session and resolve once the projector says to start streaming.
+ *
+ *   connect request → accept → layout request → 0x10 (open both video
+ *   sockets) → 0x16 (send hello + first frame, then 0x27)
+ */
 export function connectToProjector(
   host: string,
   options: ConnectOptions
-): Promise<void> {
-  const { clientIp, mainPort = DEFAULT_PORTS.main } = options;
-  return new Promise((resolve, reject) => {
-    console.log(`\nConnecting to ${host}...`);
-    const socket = connect(mainPort, host, () => {
-      socket.write(eempMessage(clientIp, 1, 1, C_CONNECT_REQUEST));
+): Promise<ProjectorSession> {
+  const { clientIp, mainPort = DEFAULT_PORTS.main, imagePort = DEFAULT_PORTS.image } = options;
+  const client: ClientIdentity = {
+    ip: clientIp,
+    name: options.clientName ?? os.hostname().replace(/\.local$/, ""),
+  };
+  const caps = options.projector.capabilities ?? {};
+  const framebuffer = caps.framebuffer ?? {
+    width: EPRD_FRAMEBUFFER_WIDTH,
+    height: EPRD_FRAMEBUFFER_HEIGHT,
+  };
+  const maxRect = caps.maxRect ?? DEFAULT_MAX_RECT;
+  const identity = options.projector.identity;
+  if (!identity) throw new Error("connectToProjector needs a probed/discovered projector");
+
+  return new Promise((resolveReady, rejectReady) => {
+    let video: TCPSocket[] = [];
+    let streaming = false;
+    let queued: Rect[] | undefined;
+    let heartbeat: NodeJS.Timeout | undefined;
+    let closeReason: CloseReason = "connection-lost";
+    let onDisconnectAck: (() => void) | undefined;
+    let resolveClosed!: (r: CloseReason) => void;
+    const closed = new Promise<CloseReason>((r) => (resolveClosed = r));
+
+    const send = (status: number, family: 0 | 1, payload?: Buffer) =>
+      main.write(eempMessage(clientIp, status, family, payload));
+
+    const writeFrame = (rects: Rect[]) => {
+      for (const r of rects) {
+        if (r.w > maxRect.width || r.h > maxRect.height) {
+          console.warn(
+            `rect ${r.w}x${r.h} exceeds the projector's advertised max ` +
+              `${maxRect.width}x${maxRect.height}; real hardware may reject it`
+          );
+        }
+      }
+      video[0]?.write(buildEprdUpdate(clientIp, rects));
+    };
+
+    const openVideo = () => {
+      if (video.length) return;
+      // The real app opens two connections; only the first carries data.
+      video = [connect(imagePort, host), connect(imagePort, host)];
+      for (const s of video) s.on("error", (err) => console.error("Video error:", err.message));
+    };
+
+    const session: ProjectorSession = {
+      framebuffer,
+      maxRect,
+      closed,
+      sendFrame(rects) {
+        if (streaming) writeFrame(rects);
+        else queued = rects;
+      },
+      disconnect() {
+        return new Promise((resolve) => {
+          closeReason = "client";
+          for (const s of video) s.end();
+          setTimeout(() => {
+            if (main.destroyed) return resolve();
+            send(Fam1.disconnect, 1);
+            const timer = setTimeout(() => main.end(), 2000);
+            onDisconnectAck = () => {
+              clearTimeout(timer);
+              main.end();
+            };
+          }, 300);
+          closed.then(() => resolve());
+        });
+      },
+    };
+
+    const main = connect(mainPort, host, () => {
+      const target: ProjectorIdentity = {
+        mac: identity.mac,
+        ip: ipToBuffer(main.remoteAddress ?? host),
+        name: identity.name,
+      };
+      send(
+        Fam1.connectRequest,
+        1,
+        connectRequestPayload(client, target, { screen: framebuffer, resume: options.resume })
+      );
     });
 
-    let keepalive: NodeJS.Timeout | undefined;
-    let streaming = false;
-    logMessages(socket, (status, family) => {
-      if (status === 2 && family === 1 && !keepalive) {
-        console.log("Connected! Sending 0x08 state message");
-        socket.write(eempMessage(clientIp, 8, 1, C_MSG_08));
-        keepalive = setInterval(() => {
-          socket.write(
-            createDataBuffer(Buffer.alloc(0), {
-              ipAddress: clientIp,
-              controlWord: EEMP_CONTROL_WORD,
-              status: 0x0a,
-            })
-          );
-        }, 3000);
-      } else if (status === 0x16 && family === 0 && !streaming) {
+    onMessages(main, (message) => {
+      const { header } = decodeDataBuffer(message);
+      const { family, status } = header;
+      if (family === 1 && status === Fam1.connectAccept && !heartbeat) {
+        send(Fam0.heartbeat, 0);
+        heartbeat = setInterval(() => send(Fam0.heartbeat, 0), HEARTBEAT_INTERVAL_MS);
+        send(Fam1.layoutRequest, 1, layoutRequestPayload(client));
+      } else if (family === 1 && status === Fam1.staleSession) {
+        console.log("Projector still had our previous session (0x17)");
+      } else if (family === 1 && status === Fam1.openVideo) {
+        openVideo();
+      } else if (family === 0 && status === Fam0.startStream && !streaming) {
+        openVideo(); // in case 0x10 never came
         streaming = true;
-        console.log("Projector says start streaming: acking with 0x27");
-        socket.write(eempMessage(clientIp, 0x27, 1, C_STREAM_ACK));
-        streamVideo(host, options).catch((err) =>
-          console.error("Stream error:", err.message)
-        );
+        video[0].write(buildEprdHello(clientIp, framebuffer));
+        if (queued) writeFrame(queued);
+        queued = undefined;
+        send(Fam1.streamStarted, 1, streamStartedPayload());
+        resolveReady(session);
+      } else if (family === 1 && status === Fam1.disconnectAck) {
+        onDisconnectAck?.();
+      } else if (family === 1 && status === Fam1.disconnectedByProjector) {
+        closeReason = "projector";
+        for (const s of video) s.destroy();
+        main.end();
       }
     });
 
-    socket.on("close", () => {
-      if (keepalive) clearInterval(keepalive);
-      console.log("Session closed");
-      resolve();
+    main.on("close", () => {
+      if (heartbeat) clearInterval(heartbeat);
+      for (const s of video) s.destroy();
+      resolveClosed(closeReason);
+      if (!streaming) rejectReady(new Error(`session closed before streaming (${closeReason})`));
     });
-    socket.on("error", reject);
+    main.on("error", (err) => {
+      if (!streaming) rejectReady(err);
+    });
   });
 }

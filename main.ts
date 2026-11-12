@@ -4,17 +4,16 @@
 // Two modes, mirroring the two roles in the protocol:
 //
 //   npm run dev:simulator
-//     Acts as a projector. Point a real iProjection app at this machine
-//     to see it discover, connect, and stream video.
+//     Acts as a projector. Point a compatible app (or this repo's client)
+//     at this machine to see it discover, connect, and stream video.
+//     Ctrl-C ends any session from the projector side (0x07) and exits.
 //
 //   npm run dev:client [host] [jpeg-file]
-//     Acts as the iProjection app. With no host, broadcasts a discovery
-//     search and connects to the first projector that answers (works
-//     against this repo's own simulator too, run in a second terminal).
-//     With a host, skips discovery and connects directly — handy for
-//     talking to a real projector, or to a simulator on localhost.
-//     With a jpeg-file, streams that image full-frame instead of the
-//     built-in test card.
+//     Acts as the app. With no host, broadcasts a discovery search and
+//     connects to the first projector that answers (works against this
+//     repo's own simulator too, run in a second terminal). With a host,
+//     probes it directly. With a jpeg-file, streams that image instead of
+//     the built-in test card. Ctrl-C disconnects cleanly (0x04 → 0x05).
 import os from "os";
 import config from "./config";
 import * as client from "./lib/client";
@@ -36,54 +35,83 @@ function toBroadcastAddress(ipv4: string): string {
   return parts.join(".");
 }
 
-async function runSimulator() {
-  console.log("------EPSON NETWORK PROJECTOR SIMULATOR------");
-  simulator.startSimulator({
+function runSimulator() {
+  console.log("------ PROJECTOR SIMULATOR ------");
+  const sim = simulator.startSimulator({
     mainPort: config.MAIN_SERVER_PORT,
     discoveryPort: config.DISCOVERY_SERVER_PORT,
     imagePort: config.IMAGE_SERVER_PORT,
     previewPort: config.PREVIEW_PORT,
   });
-  // The servers above keep the process alive; nothing left to await here.
+  process.once("SIGINT", () => {
+    console.log("\nEnding sessions from the projector side...");
+    sim.disconnectAll();
+    setTimeout(() => {
+      sim.stop();
+      process.exit(0);
+    }, 300);
+  });
 }
 
 async function runClient(hostArg?: string, streamFile?: string) {
   const clientIpString = process.env.CLIENT_IP ?? detectLocalIpv4();
   const clientIp = ipToBuffer(clientIpString);
-  const ports = {
-    mainPort: config.MAIN_SERVER_PORT,
-    imagePort: config.IMAGE_SERVER_PORT,
-  };
 
-  let host = hostArg;
-  if (!host) {
+  let projector: client.DiscoveredProjector;
+  if (hostArg) {
+    projector = await client.probeProjector(hostArg, {
+      clientIp,
+      mainPort: config.MAIN_SERVER_PORT,
+    });
+  } else {
     const broadcastAddress = process.env.BROADCAST_ADDR ?? toBroadcastAddress(clientIpString);
     console.log(`Searching for projectors from ${clientIpString} (broadcast ${broadcastAddress})...`);
-    const projectors = await client.discoverProjectors({
+    const found = await client.discoverProjectors({
       clientIp,
       broadcastAddress,
       discoveryPort: config.DISCOVERY_SERVER_PORT,
     });
-    if (projectors.length === 0) {
+    if (found.length === 0) {
       console.log("No projectors found");
       return;
     }
-    console.log(`Found projector(s): ${projectors.map((p) => p.host).join(", ")}`);
-    host = projectors[0].host;
+    for (const p of found) {
+      console.log(`Found "${p.identity?.name}" at ${p.host}${p.identity?.inUse ? " (in use)" : ""}`);
+    }
+    projector = found[0];
   }
 
-  const rects = streamFile ? client.loadJpegFrame(streamFile) : client.loadTestCard();
-  console.log(streamFile ? `Streaming ${streamFile}` : "Streaming built-in test card");
+  const caps = projector.capabilities;
+  console.log(
+    `Projector "${projector.identity?.name}": framebuffer ` +
+      `${caps?.framebuffer?.width}x${caps?.framebuffer?.height}, ` +
+      `max rect ${caps?.maxRect?.width}x${caps?.maxRect?.height}`
+  );
 
-  await client.probeProjector(host, { clientIp, ...ports });
-  await client.connectToProjector(host, { clientIp, ...ports, rects });
+  const rects = streamFile ? client.loadJpegFrame(streamFile) : client.loadTestCard();
+  const session = await client.connectToProjector(projector.host, {
+    clientIp,
+    clientName: process.env.CLIENT_NAME,
+    projector,
+    mainPort: config.MAIN_SERVER_PORT,
+    imagePort: config.IMAGE_SERVER_PORT,
+  });
+  console.log(streamFile ? `Streaming ${streamFile}` : "Streaming built-in test card");
+  // Like the real app: send a frame when the screen changes, not on a timer.
+  session.sendFrame(rects);
+
+  process.once("SIGINT", () => {
+    console.log("\nDisconnecting...");
+    session.disconnect();
+  });
+  console.log(`Session ended (${await session.closed})`);
 }
 
 async function main() {
   const [mode, ...rest] = process.argv.slice(2);
 
   if (mode === "simulator") {
-    await runSimulator();
+    runSimulator();
   } else if (mode === "client") {
     await runClient(rest[0], rest[1]);
   } else {

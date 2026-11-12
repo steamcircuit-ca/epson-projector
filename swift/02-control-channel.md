@@ -3,36 +3,70 @@
 The full client-side sequence: optional discovery, a probe, then the
 session that stays open for as long as you're connected to the projector.
 Every message builder referenced here is in `EpsonClientMessages` in
-[`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift).
+[`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift). The payloads under
+them are built field by field by `EempPayloads` from your
+`ClientIdentity` and the projector's `ProjectorIdentity`.
+
+## Identities
+
+Two values feed every session message:
+
+```swift
+// You. `name` is what the projector shows for your device (sent as UTF-16LE).
+let client = ClientIdentity(ip: [192, 168, 1, 10], name: "Test iPad")
+
+// The projector, from its identity reply (status 3) to your probe or search.
+// The reply carries name and MAC; the IP is the address it came from.
+let target = EempPayloads.parseIdentity(identityPayload)!.projector(ip: [192, 168, 1, 20])
+// → ProjectorIdentity(mac: 00:00:5e:00:53:01, ip: 192.168.1.20, name: "EB005301")
+```
+
+The connect request names the projector it's addressed to (MAC, IP and
+name), so probe first and keep the parsed identity. The capabilities reply
+(status `0x15`) is worth keeping too:
+`EempPayloads.parseCapabilities(_:)` gives you the framebuffer size to
+declare in the EPRD hello and the largest rect the projector accepts (see
+[03-video-channel.md](./03-video-channel.md)).
 
 ## Message catalog
 
 Every `(family, status)` pair the client needs to send or recognize.
-"Builder" is the `EpsonClientMessages` / `EpsonWire` function that produces
-it; "constant" is the named status in `EempFamily0Status` / `EempFamily1Status`.
+"Builder" is the `EpsonClientMessages` function that produces it;
+"constant" is the named status in `EempFamily0Status` / `EempFamily1Status`.
 
 | Family | Status | Direction | Meaning | Builder / constant |
 |---|---|---|---|---|
-| 0 | 1 (`0x01`) | you → projector (UDP) | Discovery search | `EpsonClientMessages.search` |
-| 0 | 2 (`0x02`) | you → projector | Probe | `EpsonClientMessages.probe` |
-| 0 | 3 (`0x03`) | projector → you | Identity reply (name, MAC) | recognize via `EempFamily0Status.identity` |
-| 0 | 21 (`0x15`) | projector → you | Capabilities reply | recognize via `EempFamily0Status.capabilities` |
-| 1 | 1 (`0x01`) | you → projector | Connect request | `EpsonClientMessages.connectRequest` |
-| 1 | 2 (`0x02`) | projector → you | Connect accept | recognize via `EempFamily1Status.connectAccept` |
-| 1 | 14 (`0x0e`) | projector → you | State push (×2 after accept, ×1 after state ack) | no action needed — log and ignore |
-| 1 | 8 (`0x08`) | you → projector | Client state | `EpsonClientMessages.clientState` |
-| 1 | 9 (`0x09`) | projector → you | State ack | no action needed — log and ignore |
-| 1 | 16 (`0x10`) | projector → you | *(unlabeled, empty)* | no action needed — log and ignore |
-| 0 | 22 (`0x16`) | projector → you | **Start streaming** — open the video connection | recognize via `EempFamily0Status.startStream` |
-| 1 | 39 (`0x27`) | you → projector | Stream ack | `EpsonClientMessages.streamAck` |
-| 0 | 10 (`0x0a`) | you → projector | Keepalive (empty payload) | `EpsonClientMessages.keepalive` |
-| 0 | 10 (`0x0a`) | projector → you | Keepalive ack (48 zero bytes) | no action needed |
+| 0 | `0x01` | you → broadcast (UDP) | Discovery search | `EpsonClientMessages.search(clientIP:)` |
+| 0 | `0x02` | you → projector | Probe | `EpsonClientMessages.probe(clientIP:)` |
+| 1 | `0x1a` | projector → you | "In use" notice, just before an in-use identity | `EempFamily1Status.inUse` — ignore |
+| 0 | `0x03` | projector → you | Identity reply (name, MAC, in use?) | `EempFamily0Status.identity`, parse with `EempPayloads.parseIdentity` |
+| 0 | `0x15` | projector → you | Capabilities reply | `EempFamily0Status.capabilities`, parse with `EempPayloads.parseCapabilities` |
+| 1 | `0x01` | you → projector | Connect request | `EpsonClientMessages.connectRequest(client:target:)` |
+| 1 | `0x02` | projector → you | Connect accept | `EempFamily1Status.connectAccept` |
+| 1 | `0x0e` | projector → you | State broadcast (who's on screen) | `EempFamily1Status.stateBroadcast` — log and ignore |
+| 1 | `0x17` | projector → you | Stale-session notice (it still had your last session) | `EempFamily1Status.staleSession` — log and ignore |
+| 1 | `0x08` | you → projector | Layout request: "put me on screen" | `EpsonClientMessages.layoutRequest(client:)` |
+| 1 | `0x09` | projector → you | Layout accepted | `EempFamily1Status.layoutAccepted` — log and ignore |
+| 1 | `0x10` | projector → you | **Open video channel** — connect to 3621 now | `EempFamily1Status.openVideo` |
+| 0 | `0x16` | projector → you | **Start streaming** — send hello + first frame | `EempFamily0Status.startStream` |
+| 1 | `0x27` | you → projector | Streaming started (optional) | `EpsonClientMessages.streamStarted(clientIP:)` |
+| 0 | `0x0a` | you → projector | Heartbeat (empty payload), every 15 s | `EpsonClientMessages.heartbeat(clientIP:)` |
+| 0 | `0x0a` | projector → you | Projector's own heartbeat (48 bytes) | `EempFamily0Status.heartbeat` — no action |
+| 1 | `0x04` | you → projector | Disconnect request (empty) | `EpsonClientMessages.disconnect(clientIP:)` |
+| 1 | `0x05` | projector → you | Disconnect ack | `EempFamily1Status.disconnectAck` |
+| 1 | `0x07` | projector → you | **Disconnected by projector** — session over | `EempFamily1Status.disconnectedByProjector` |
 
 Full byte-level detail and provenance for each of these is in
 [`../docs/eemp-control-protocol.md`](../docs/eemp-control-protocol.md) —
 this table is the subset your client actually needs to act on.
+`EempPayloads` also has builders for the projector-side payloads
+(`connectAcceptPayload`, `stateBroadcastPayload`, `projectorHeartbeatPayload`
+and so on) if you want to unit-test your handler without a projector.
 
 ## Sequence
+
+This is the order the real iProjection app follows (see
+[`../docs/eemp-control-protocol.md § Session establishment`](../docs/eemp-control-protocol.md#session-establishment)).
 
 ```mermaid
 sequenceDiagram
@@ -42,29 +76,36 @@ sequenceDiagram
     rect rgb(30, 41, 59)
     note over You,P: Probe — TCP 3620, connect then close
     You->>P: connect
-    You->>P: status 2 (probe)
-    P-->>You: status 3 (identity)
-    P-->>You: status 21 (capabilities)
+    You->>P: 0x02/0 probe
+    P-->>You: [0x1a/1 if in use] 0x03/0 identity
+    P-->>You: 0x15/0 capabilities
     You->>P: close
     end
 
     rect rgb(30, 41, 59)
     note over You,P: Session — new TCP 3620 connection, stays open
     You->>P: connect
-    You->>P: status 1/family 1 (connect request)
-    P-->>You: status 2/family 1 (accept)
-    P-->>You: status 0x0e/family 1 ×2 (ignore)
-    You->>P: status 8/family 1 (client state)
-    P-->>You: status 9/family 1 (ignore)
-    P-->>You: status 0x0e/family 1 (ignore)
-    P-->>You: status 0x10/family 1 (ignore)
-    P-->>You: status 0x16/family 0 — START STREAMING
-    You->>P: status 0x27/family 1 (stream ack)
-    Note over You: open TCP 3621 now — see 03-video-channel.md
-    loop every ~3s, for the rest of the session
-        You->>P: status 0x0a (keepalive)
-        P-->>You: status 0x0a (keepalive ack)
+    You->>P: 0x01/1 connect request
+    P-->>You: 0x02/1 connect accept
+    P-->>You: 0x0e/1 state broadcast ×2 (ignore)
+    You->>P: 0x0a/0 heartbeat (first; then every 15 s)
+    P-->>You: 0x0a/0 heartbeat reply (ignore)
+    You->>P: 0x08/1 layout request
+    P-->>You: 0x09/1 layout accepted (ignore)
+    P-->>You: 0x0e/1 state broadcast (ignore)
+    P-->>You: 0x10/1 OPEN VIDEO
+    Note over You: open TWO TCP connections to 3621 now
+    P-->>You: 0x16/0 START STREAMING
+    Note over You: on 3621: hello + first frame — see 03-video-channel.md
+    You->>P: 0x27/1 streaming started (optional)
     end
+
+    rect rgb(30, 41, 59)
+    note over You,P: Teardown (yours)
+    Note over You: close both 3621 connections
+    You->>P: 0x04/1 disconnect
+    P-->>You: 0x05/1 disconnect ack
+    P-->>You: closes 3620
     end
 ```
 
@@ -84,24 +125,25 @@ for why you might skip this entirely for a v1. If you do implement it:
   listening on an ephemeral port will never see the replies. (Confirmed
   from the real capture; this is exactly the bug an early version of the
   Node reference implementation in this repo had.)
-- Collect replies for a few seconds. Each responding projector sends two
-  UDP datagrams back, unicast: status 3 (identity) then status 21
-  (capabilities). The sender's IP address is the projector's host —
-  that's the only piece of the reply you strictly need for the next step.
+- Collect replies for a few seconds. Each responding projector sends
+  status 3 (identity) then status `0x15` (capabilities), unicast, each one
+  **twice** (de-duplicate), and from ephemeral ports. A projector that's
+  already in use sends a `0x1a` notice first and the longer "in use"
+  identity form; `parseIdentity` handles both and sets `inUse`. The
+  sender's IP address is the projector's host.
 
 ### 2. Probe (TCP)
 
 Open a plain TCP connection to the projector's IP on port 3620:
 
 ```swift
-connection.send(content: Data(EpsonClientMessages.probe(clientIP: myIP)), completion: .contentProcessed { _ in })
+connection.send(content: Data(EpsonClientMessages.probe(clientIP: client.ip)), completion: .contentProcessed { _ in })
 ```
 
-Wait for status 3 then status 21 back (same identity/capability pair as
-discovery, just over TCP this time), then close this connection. This step
-is a bit of a formality — it's what the real app is observed doing before
-ever opening a session — but do it anyway to match observed real-device
-behavior as closely as possible.
+Wait for status 3 then status `0x15` back (the same identity/capabilities
+pair as discovery, just over TCP, possibly preceded by `0x1a`), parse them,
+then close this connection. You need the identity for the connect request
+in the next step.
 
 ### 3. Session (new TCP connection)
 
@@ -109,76 +151,109 @@ Open a **second, new** TCP connection to the same host:port — the probe
 connection must already be closed. Send the connect request:
 
 ```swift
-connection.send(content: Data(EpsonClientMessages.connectRequest(clientIP: myIP)), completion: .contentProcessed { _ in })
+connection.send(content: Data(EpsonClientMessages.connectRequest(client: client, target: target)), completion: .contentProcessed { _ in })
 ```
 
-`connectRequest(clientIP:)` already does the IP-patching for you — see
-[`EpsonProjectorKit.swift`](./EpsonProjectorKit.swift)'s `EpsonClientMessages.patch`,
-which finds every occurrence of the captured template's client IP
-(`192.168.84.53`) and replaces it with the IP you pass in. You don't need
-to know or care where in the 289-byte payload those occurrences are.
+It declares your screen size (default 1280×800; pass `screen:` to change
+it) and the projector you're addressing. There's no IP patching involved:
+every address and name in the payload comes from `client` and `target`.
 
-Then, dispatching on each incoming message's `(status, family)`:
+Then, dispatching on each incoming message's `(family, status)`:
 
-- On **status 2 / family 1** (connect accept): send the client state
-  message (`EpsonClientMessages.clientState(clientIP:)`), and **start a
-  repeating ~3-second timer** that sends `EpsonClientMessages.keepalive(clientIP:)`
-  for as long as the session stays open. Don't wait for anything else
-  before starting the keepalive timer — it runs concurrently with the rest
-  of this sequence.
-- On **status 0x0e / family 1** (state push): nothing to do, just don't
-  treat it as an error. You'll see it twice right after the accept, and
-  once more a bit later.
-- On **status 9 / family 1** (state ack) and **status 0x10 / family 1**:
-  same — expected, no action.
-- On **status 0x16 / family 0** ("start streaming"): send
-  `EpsonClientMessages.streamAck(clientIP:)`, then open the video
-  connection (port 3621) and start streaming — see
-  [03-video-channel.md](./03-video-channel.md).
+- On **`0x02` / family 1** (connect accept): send one heartbeat
+  (`EpsonClientMessages.heartbeat(clientIP:)`) and **start a repeating
+  15-second timer** (`EpsonClientMessages.heartbeatInterval`) that keeps
+  sending it, then send the layout request
+  (`EpsonClientMessages.layoutRequest(client:)`). The heartbeat timer runs
+  for the rest of the session, independently of everything else.
+- On **`0x0e`**, **`0x09`** and **`0x17`** (family 1): nothing to do, just
+  don't treat them as errors. `0x17` means the projector still held your
+  previous session; it carries on normally.
+- On **`0x10` / family 1** ("open video channel"): open **two** TCP
+  connections to port 3621. The first carries the video stream. The
+  second never carries data in the captures, but the real app keeps it
+  open for the whole session (probably reserved for audio), so do the
+  same. Don't send anything on them yet. The projector appears to wait for
+  these connections before it sends `0x16`.
+- On **`0x16` / family 0** ("start streaming"): on the first video
+  connection send the EPRD hello and your first frame (see
+  [03-video-channel.md](./03-video-channel.md)), then send
+  `EpsonClientMessages.streamStarted(clientIP:)`. The `0x27` is optional:
+  the real app sometimes sends it after its first video bytes, and once
+  skipped it entirely. If `0x10` never arrived, open the video connections
+  now.
+- On **`0x07` / family 1** ("disconnected by projector"): the session is
+  over. The projector has already closed 3620 and both 3621 connections.
+  Stop your timers and close everything on your side. Don't reply.
+- On **`0x05` / family 1** ("disconnect ack"): see teardown below.
 
-Keep this control connection open and the keepalive timer running for the
-entire time you want to stay connected. Closing it (or letting it drop)
-ends the session — session teardown isn't otherwise implemented/understood
-yet, see [`../docs/README.md § Known gaps`](../docs/README.md#known-gaps).
+### 4. Heartbeats
 
-### 4. Keepalive
-
-Every ~3 seconds, send `EpsonClientMessages.keepalive(clientIP:)` — a
+Every 15 seconds, send `EpsonClientMessages.heartbeat(clientIP:)` — a
 message with an **empty** payload (not the 48-zero-byte payload used by
-search/probe; easy to mix up, they're different). The projector replies
-with a 48-zero-byte payload on the same status/family; no action needed on
-your end beyond noting the connection is still alive.
+search/probe; easy to mix up, they're different).
 
-(The real iProjection app only sends one about every **15 seconds**, per
-the captures. 3 s matches `lib/client` and works with the simulator. See
-[`../docs/reverse-engineering-todo.md`](../docs/reverse-engineering-todo.md)
-for what's still unconfirmed, including teardown messages this guide
-doesn't cover yet.)
+These aren't request/response. The projector answers your *first*
+heartbeat immediately, then runs its own independent 15-second timer and
+sends a 48-byte `0x0a` (with 44100, an audio sample rate, at offset 8)
+whenever it fires. No action is needed on yours beyond noting the
+connection is alive. Details:
+[`../docs/eemp-control-protocol.md § Heartbeats`](../docs/eemp-control-protocol.md#heartbeats).
+
+### 5. Teardown
+
+To disconnect cleanly, the way the real app does:
+
+1. Close both 3621 connections.
+2. About 300 ms later, send `EpsonClientMessages.disconnect(clientIP:)`
+   (`0x04`/family 1, empty).
+3. Wait for `0x05`/family 1. The projector closes 3620 right after
+   sending it; close your side too. Use a timeout (a couple of seconds) in
+   case it never comes.
+
+If you just drop the sockets without `0x04`, the projector keeps
+reporting "in use" and holds your session until the next connection, which
+then gets the stale-session `0x17`. It works, but it's untidy.
+
+If the projector ends the session (`0x07`), it closes everything itself;
+see above. Details:
+[`../docs/eemp-control-protocol.md § Session teardown`](../docs/eemp-control-protocol.md#session-teardown).
 
 ## Complete worked example
 
 ```swift
+import Foundation
 import Network
 
 final class ProjectorSession {
     private var connection: NWConnection?
+    private var videoConnections: [NWConnection] = []
     private var pending: [UInt8] = []
-    private var keepaliveTimer: Timer?
-    private let clientIP: [UInt8]
-    private let host: String
-    private var onStartStreaming: (() -> Void)?
+    private var heartbeatTimer: Timer?
+    private var disconnectTimeout: Timer?
+    private let client: ClientIdentity
+    private let target: ProjectorIdentity
+    /// Called on 0x16 with the video connection to send the hello and first frame on.
+    private var onStartStreaming: ((NWConnection) -> Void)?
+    private var onEnded: (() -> Void)?
 
-    init(host: String, clientIP: [UInt8]) {
-        self.host = host
-        self.clientIP = clientIP
+    init(client: ClientIdentity, target: ProjectorIdentity) {
+        self.client = client
+        self.target = target
     }
 
-    func connect(onStartStreaming: @escaping () -> Void) {
+    private var host: NWEndpoint.Host {
+        NWEndpoint.Host(target.ip.map(String.init).joined(separator: "."))
+    }
+
+    func connect(onStartStreaming: @escaping (NWConnection) -> Void, onEnded: @escaping () -> Void) {
         self.onStartStreaming = onStartStreaming
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: 3620, using: .tcp)
+        self.onEnded = onEnded
+        let conn = NWConnection(host: host, port: 3620, using: .tcp)
         connection = conn
         conn.stateUpdateHandler = { [weak self] state in
-            if case .ready = state { self?.sendConnectRequest() }
+            guard let self else { return }
+            if case .ready = state { self.send(EpsonClientMessages.connectRequest(client: self.client, target: self.target)) }
         }
         conn.start(queue: .main)
         receiveLoop()
@@ -188,10 +263,6 @@ final class ProjectorSession {
         connection?.send(content: Data(bytes), completion: .contentProcessed { _ in })
     }
 
-    private func sendConnectRequest() {
-        send(EpsonClientMessages.connectRequest(clientIP: clientIP))
-    }
-
     private func receiveLoop() {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self else { return }
@@ -199,7 +270,7 @@ final class ProjectorSession {
             let (messages, rest) = EpsonWire.extractMessages(self.pending)
             self.pending = rest
             for message in messages { self.handle(message) }
-            if error == nil && !isComplete { self.receiveLoop() }
+            if error == nil && !isComplete { self.receiveLoop() } else { self.ended() }
         }
     }
 
@@ -208,32 +279,62 @@ final class ProjectorSession {
 
         switch (header.family, header.status) {
         case (1, EempFamily1Status.connectAccept):
-            send(EpsonClientMessages.clientState(clientIP: clientIP))
-            startKeepalive()
+            send(EpsonClientMessages.heartbeat(clientIP: client.ip))
+            startHeartbeat()
+            send(EpsonClientMessages.layoutRequest(client: client))
+        case (1, EempFamily1Status.openVideo):
+            openVideo()
         case (0, EempFamily0Status.startStream):
-            send(EpsonClientMessages.streamAck(clientIP: clientIP))
-            onStartStreaming?()
+            openVideo() // in case 0x10 never came
+            onStartStreaming?(videoConnections[0]) // hello + first frame
+            send(EpsonClientMessages.streamStarted(clientIP: client.ip))
+        case (1, EempFamily1Status.disconnectAck):
+            ended()
+        case (1, EempFamily1Status.disconnectedByProjector):
+            ended()
         default:
-            break // 0x0e pushes, 0x09 ack, 0x10, keepalive acks — nothing to do
+            break // 0x0e, 0x09, 0x17, projector heartbeats — nothing to do
         }
     }
 
-    private func startKeepalive() {
-        keepaliveTimer?.invalidate()
-        keepaliveTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+    private func openVideo() {
+        guard videoConnections.isEmpty else { return }
+        // Two connections, like the real app. Only the first carries data.
+        videoConnections = (0..<2).map { _ in NWConnection(host: host, port: 3621, using: .tcp) }
+        for conn in videoConnections { conn.start(queue: .main) }
+    }
+
+    private func startHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = Timer.scheduledTimer(withTimeInterval: EpsonClientMessages.heartbeatInterval, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.send(EpsonClientMessages.keepalive(clientIP: self.clientIP))
+            self.send(EpsonClientMessages.heartbeat(clientIP: self.client.ip))
         }
     }
 
+    /// Clean disconnect: close video, send 0x04, wait for 0x05.
     func disconnect() {
-        keepaliveTimer?.invalidate()
+        videoConnections.forEach { $0.cancel() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            self.send(EpsonClientMessages.disconnect(clientIP: self.client.ip))
+            self.disconnectTimeout = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in self?.ended() }
+        }
+    }
+
+    private func ended() {
+        heartbeatTimer?.invalidate()
+        disconnectTimeout?.invalidate()
+        videoConnections.forEach { $0.cancel() }
+        videoConnections = []
         connection?.cancel()
+        connection = nil
+        onEnded?()
+        onEnded = nil
     }
 }
 ```
 
 This mirrors `connectToProjector()` in [`../lib/client/session.ts`](../lib/client/session.ts)
-almost line for line — useful to cross-reference if anything here is
-unclear, since that version has already been run against real projector
-captures during this repo's original reverse-engineering work.
+closely — useful to cross-reference if anything here is unclear. It follows
+the same real-app sequence described above.

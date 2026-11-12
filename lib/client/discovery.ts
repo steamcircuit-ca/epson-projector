@@ -1,9 +1,21 @@
 import dgram from "dgram";
-import { createDataBuffer, decodeDataBuffer } from "../shared/header";
-import { C_SEARCH_MESSAGE, EEMP_CONTROL_WORD } from "../shared/constants";
+import { decodeDataBuffer, extractMessages } from "../shared/header";
+import {
+  Fam0,
+  ParsedCapabilities,
+  ParsedIdentity,
+  eempMessage,
+  parseCapabilities,
+  parseIdentity,
+  searchPayload,
+} from "../shared/messages";
 import { DEFAULT_PORTS } from "../shared/ports";
 
-export type DiscoveredProjector = { host: string; data: Buffer[] };
+export type DiscoveredProjector = {
+  host: string;
+  identity?: ParsedIdentity;
+  capabilities?: ParsedCapabilities;
+};
 
 export type DiscoverOptions = {
   // This client's own IP, embedded in the search message's header.
@@ -15,8 +27,21 @@ export type DiscoverOptions = {
   timeoutMs?: number;
 };
 
+/** Fill in identity/capabilities from one reply message. */
+export function absorbReply(projector: DiscoveredProjector, message: Buffer) {
+  const { header, data } = decodeDataBuffer(message);
+  if (header.family !== 0) return; // 0x1a "in use" is family 1; identity says so too
+  try {
+    if (header.status === Fam0.identity) projector.identity = parseIdentity(data);
+    if (header.status === Fam0.capabilities) projector.capabilities = parseCapabilities(data);
+  } catch {
+    // ignore malformed replies
+  }
+}
+
 // Broadcasts an EEMP0100 search (status 1) on the discovery port and
 // collects every projector's identity/capability reply for `timeoutMs`.
+// Like the real app, every search is sent twice.
 export function discoverProjectors({
   clientIp,
   broadcastAddress,
@@ -24,71 +49,40 @@ export function discoverProjectors({
   timeoutMs = 3000,
 }: DiscoverOptions): Promise<DiscoveredProjector[]> {
   return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket("udp4");
-    const responses: { [host: string]: Buffer[] } = {};
+    const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    const found = new Map<string, DiscoveredProjector>();
 
     socket.on("listening", () => {
-      const address = socket.address();
-      console.log(`UDP client listening on ${address.address}:${address.port}`);
       socket.setBroadcast(true);
-
-      const data = createDataBuffer(Buffer.from(C_SEARCH_MESSAGE, "hex"), {
-        ipAddress: clientIp,
-        controlWord: EEMP_CONTROL_WORD,
-        status: 1,
-      });
-
-      socket.send(
-        data,
-        0,
-        data.length,
-        discoveryPort,
-        broadcastAddress,
-        (err) => {
+      const search = eempMessage(clientIp, Fam0.search, 0, searchPayload());
+      for (let i = 0; i < 2; i++) {
+        socket.send(search, discoveryPort, broadcastAddress, (err) => {
           if (err) {
-            console.error("Error sending message:", err);
             socket.close();
             reject(err);
-          } else {
-            console.log(`Search sent to ${broadcastAddress}:${discoveryPort}`);
           }
-        }
-      );
+        });
+      }
     });
 
     socket.on("message", (msg, rinfo) => {
-      const { header } = decodeDataBuffer(msg);
-      console.log(
-        `Discovery reply from ${rinfo.address}: status=0x${header.status.toString(
-          16
-        )} len=${header.dataLength}`
-      );
-
-      const host = rinfo.address;
-      if (!responses[host]) {
-        responses[host] = [];
-      }
-      responses[host].push(msg);
+      const projector = found.get(rinfo.address) ?? { host: rinfo.address };
+      for (const message of extractMessages(msg).messages) absorbReply(projector, message);
+      if (projector.identity) found.set(rinfo.address, projector);
     });
 
     socket.on("error", (err) => {
-      console.error("Socket error:", err);
       socket.close();
       reject(err);
     });
 
-    // Replies target the protocol port, not an ephemeral one, so we have to
-    // listen there rather than let dgram pick a random source port.
+    // Replies target port 3620 on the client, not the search's source
+    // port, so we must listen there.
     socket.bind(discoveryPort);
 
     setTimeout(() => {
       socket.close();
-      resolve(
-        Object.keys(responses).map((host) => ({
-          host,
-          data: responses[host],
-        }))
-      );
+      resolve([...found.values()]);
     }, timeoutMs);
   });
 }

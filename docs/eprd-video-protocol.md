@@ -4,11 +4,11 @@ The video/framebuffer stream. Control word `EPRD0600`, TCP port 3621
 (`IMAGE_SERVER_PORT`). The real app connects as soon as the control
 channel sends `0x10`, and starts writing when `0x16` arrives. See
 [`eemp-control-protocol.md § Session establishment`](./eemp-control-protocol.md#session-establishment).
-(`lib/client` connects on `0x16` instead.)
+`lib/client` does the same.
 
 Implemented by: `lib/shared/eprd.ts` (framing, build + incremental parse),
-`lib/shared/constants.ts` (`EPRD_INIT` template), `lib/client/session.ts`
-(`streamVideo()`), `lib/simulator/handlers.ts` (`handleImageServerConnection()`).
+`eprdHelloPayload()` in `lib/shared/eprd.ts`, `lib/client/session.ts`
+(`ProjectorSession.sendFrame()`), `lib/simulator/handlers.ts` (`handleImageConnection()`).
 
 It's a **modified VNC/RFB** protocol: the hello message is RFB's
 `ServerInit` shape, and frame updates are RFB `FramebufferUpdate` messages
@@ -41,8 +41,8 @@ captured session. Only the first carries EPRD data. The second carries
 **nothing in either direction** for the whole session, but it's kept
 open and closed alongside the first. *Inferred:* it's reserved for audio.
 The projector's control-channel heartbeat announces 44100 (a sample
-rate), and the captured app had no audio to send. `lib/client` opens only
-one connection. Whether the projector requires the second one is unknown.
+rate), and the captured app had no audio to send. `lib/client` opens both
+connections, like the app. Whether the projector requires the second one is unknown.
 
 ## Frame header — and its one gotcha
 
@@ -84,8 +84,7 @@ essentially RFB's `ServerInit`:
 
 The `PIXEL_FORMAT` block (offsets 8–23) is byte-for-byte the standard RFB
 layout, **except** the three "max" fields are little-endian here where the
-RFB spec says big-endian — `lib/shared/constants.ts`'s comment already
-flags this ("maxes little-endian"), confirmed by decoding it:
+RFB spec says big-endian. Decoded:
 
 | Offset | Size | Field | Captured value |
 |---|---|---|---|
@@ -223,25 +222,24 @@ just get closed:
 
 ## Test content
 
-`lib/client/frames.ts` provides two sources of frames, and
-`connectToProjector()` (`lib/client/session.ts`) defaults to the first if
-none is passed in:
+`lib/client/frames.ts` provides two sources of frames to pass to
+`session.sendFrame()`:
 
 - **Built-in test card** (default): `loadTestCard()`, backed by
-  `lib/client/testcard/` — four JPEG tiles plus `index.json` describing
-  each tile's `x/y/w/h`, captured from a real "Connected to iProjection."
-  screen.
+  `lib/client/testcard/`: an original colour-bar image, pre-split into
+  the same four tiles the real app sends, plus `index.json` describing
+  each tile's `x/y/w/h`.
 - **An arbitrary JPEG**: `loadJpegFrame(path)`, sent as one full-frame
   rect. Dimensions are read from the JPEG's own SOF marker
   (`lib/shared/eprd.ts` `jpegDimensions()`) rather than trusted from
   outside. The example `main.ts` wires this up behind
-  `npm run dev:client -- [host] path/to/image.jpg`.
+  `npm run dev:client -- [host] path/to/image.jpg`. A large image becomes
+  one rect bigger than the 656×416 the projector advertises, so the
+  client logs a warning. A shipping app should split frames into tiles
+  the way the real app does.
 
-The default frame interval (500 ms, overridable via
-`StreamOptions.frameIntervalMs` in `lib/client/session.ts`) is this repo's
-own choice. The real app sends updates only when the screen changes (see
-above). Repeating an unchanged frame every 500 ms is harmless but
-unnecessary.
+There's no frame timer. Like the real app, call `sendFrame()` when the
+screen changes; the projector keeps showing the last frame.
 
 ## Known unknowns
 
