@@ -2,7 +2,7 @@
 
 An independent, open implementation of the wire protocol used by
 iProjection-compatible Epson wireless projectors: a protocol spec, a
-TypeScript client and projector simulator, and a Swift codec for iOS.
+TypeScript client and projector simulator.
 
 > **Not affiliated with Epson.** This is an independent project. It is
 > not affiliated with, endorsed by, sponsored by or supported by Seiko
@@ -15,7 +15,6 @@ TypeScript client and projector simulator, and a Swift codec for iOS.
 | [`docs/`](./docs/README.md) | The protocol spec. Start with [`docs/README.md`](./docs/README.md). The list of what's still unknown is in [`docs/reverse-engineering-todo.md`](./docs/reverse-engineering-todo.md). |
 | [`lib/`](./lib/) | Reusable library: `client/` (act as the app), `simulator/` (act as a projector), `shared/` (framing and captured message templates). |
 | [`main.ts`](./main.ts), [`config.ts`](./config.ts) | Example CLI wiring both sides of `lib/` together. Ports come from `.env`. |
-| [`swift/`](./swift/README.md) | Implementation guide and a drop-in codec for a native iOS client. |
 | [`tools/`](./tools/) | Capture analysis, standard-library Python. `eemp_dump.py` lists every control message. `session_timeline.py` gives a timestamped timeline including video frames and TCP open/close. |
 
 ## Usage

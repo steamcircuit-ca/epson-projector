@@ -123,9 +123,8 @@ next connect replaced it.
 
 ## 8. Hardware validation (*needs hardware*)
 
-`lib/client` and `swift/EpsonProjectorKit.swift` have only been run
-against this repo's simulator. They follow the real app's
-behaviour as far as the captures show it. See
+`lib/client` has only been run against this repo's simulator. It
+follows the real app's behaviour as far as the captures show it. See
 [control § How `lib/` compares](./eemp-control-protocol.md#how-lib-compares-with-the-real-app).
 
 ## Video stream (EPRD0600)
