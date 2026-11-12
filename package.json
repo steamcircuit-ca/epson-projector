@@ -1,18 +1,20 @@
 {
   "name": "epson-projector",
   "version": "1.0.0",
-  "description": "Reverse engineering notes for Epson wireless video projectors",
-  "main": "decode.js",
+  "description": "Reverse-engineered protocol, client and simulator for Epson iProjection wireless projectors",
+  "main": "lib/index.ts",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev:projector": "nodemon --exec ts-node projector/app.ts",
-    "dev:client": "nodemon --exec ts-node client/app.ts"
+    "dev:simulator": "nodemon --exec ts-node main.ts simulator",
+    "dev:client": "nodemon --exec ts-node main.ts client",
+    "typecheck": "tsc --noEmit",
+    "dump": "python3 tools/eemp_dump.py"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^20.14.10",
+    "nodemon": "^3.1.14",
     "typescript": "^5.5.3"
   },
   "dependencies": {

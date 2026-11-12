@@ -16,6 +16,10 @@ const envSchema = z.object({
     (val) => parseInt(val as string, 10),
     z.number()
   ),
+  PREVIEW_PORT: z.preprocess(
+    (val) => parseInt((val as string) ?? "3630", 10),
+    z.number()
+  ),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
